@@ -15,14 +15,13 @@ import {
 } from '@aws-sdk/client-bedrock-runtime';
 import {
   type GenerateContentParameters,
-  type GenerateContentResponse,
+  GenerateContentResponse,
   type CountTokensParameters,
   type CountTokensResponse,
   type EmbedContentParameters,
   type EmbedContentResponse,
   type Content,
   type Part,
-  FinishReason,
 } from '@google/genai';
 import type { ContentGenerator } from '../contentGenerator.js';
 import type { LlmRole } from '../../telemetry/llmRole.js';
@@ -41,12 +40,22 @@ export class BedrockContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<GenerateContentResponse> {
-    const messages = this.mapContentsToMessages(request.contents as Content[]);
+    const messages = this.mapContentsToMessages(this.ensureContentArray(request.contents));
     const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
     const toolConfig = this.mapTools(request.config?.tools);
 
+    const modelIdRaw = request.model.startsWith('bedrock/') ? request.model.slice(8) : request.model;
+    let modelId = modelIdRaw;
+
+    // Support configurable Bedrock inference profile prefix (default to 'us')
+    // This allows users to use 'eu' or other supported prefixes for Nova models.
+    const bedrockPrefix = process.env['BEDROCK_PREFIX'] || 'us';
+    if (bedrockPrefix !== 'us' && modelId.startsWith('us.amazon.nova')) {
+      modelId = modelId.replace(/^us\./, `${bedrockPrefix}.`);
+    }
+
     const command = new ConverseCommand({
-      modelId: request.model,
+      modelId,
       messages,
       system,
       inferenceConfig: {
@@ -59,7 +68,7 @@ export class BedrockContentGenerator implements ContentGenerator {
     });
 
     const response = await this.client.send(command);
-    return this.mapResponse(response);
+    return this.ensureGenerateContentResponse(this.mapResponse(response));
   }
 
   async generateContentStream(
@@ -67,12 +76,21 @@ export class BedrockContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
-    const messages = this.mapContentsToMessages(request.contents as Content[]);
+    const messages = this.mapContentsToMessages(this.ensureContentArray(request.contents));
     const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
     const toolConfig = this.mapTools(request.config?.tools);
 
+    const modelIdRaw = request.model.startsWith('bedrock/') ? request.model.slice(8) : request.model;
+    let modelId = modelIdRaw;
+
+    // Support configurable Bedrock inference profile prefix (default to 'us')
+    const bedrockPrefix = process.env['BEDROCK_PREFIX'] || 'us';
+    if (bedrockPrefix !== 'us' && modelId.startsWith('us.amazon.nova')) {
+      modelId = modelId.replace(/^us\./, `${bedrockPrefix}.`);
+    }
+
     const command = new ConverseStreamCommand({
-      modelId: request.model,
+      modelId,
       messages,
       system,
       inferenceConfig: {
@@ -94,6 +112,25 @@ export class BedrockContentGenerator implements ContentGenerator {
 
   async embedContent(_request: EmbedContentParameters): Promise<EmbedContentResponse> {
     throw new Error('Embeddings not yet implemented for Bedrock provider.');
+  }
+
+  private ensureContentArray(contents: any): Content[] {
+    if (!contents) return [];
+    if (Array.isArray(contents)) {
+      return contents.map(c => {
+        if (typeof c === 'string') return { role: 'user', parts: [{ text: c }] };
+        if (c.text) return { role: 'user', parts: [c] };
+        return c;
+      });
+    }
+    if (typeof contents === 'string') return [{ role: 'user', parts: [{ text: contents }] }];
+    if (contents.text) return [{ role: 'user', parts: [contents] }];
+    return [contents];
+  }
+
+  private ensureGenerateContentResponse(obj: any): GenerateContentResponse {
+    Object.setPrototypeOf(obj, GenerateContentResponse.prototype);
+    return obj as GenerateContentResponse;
   }
 
   private mapContentsToMessages(contents: Content[]): Message[] {
@@ -145,9 +182,9 @@ export class BedrockContentGenerator implements ContentGenerator {
     if (typeof systemInstruction === 'string') {
       text = systemInstruction;
     } else if (Array.isArray(systemInstruction)) {
-      text = systemInstruction.map(p => p.text || '').join('\n');
-    } else if ('parts' in systemInstruction && systemInstruction.parts) {
-      text = systemInstruction.parts.map(p => p.text || '').join('\n');
+      text = systemInstruction.map(p => (p as any).text || '').join('\n');
+    } else if ('parts' in systemInstruction) {
+      text = (systemInstruction.parts as any[]).map(p => p.text || '').join('\n');
     } else {
       text = (systemInstruction as Part).text || '';
     }
@@ -162,12 +199,17 @@ export class BedrockContentGenerator implements ContentGenerator {
     for (const tool of tools) {
       if (tool.functionDeclarations) {
         for (const fd of tool.functionDeclarations) {
+          const parameters = fd.parameters as any;
+          // Bedrock requires non-empty inputSchema. Skip if no properties.
+          if (!parameters || !parameters.properties || Object.keys(parameters.properties).length === 0) {
+            continue;
+          }
           bedrockTools.push({
             toolSpec: {
               name: fd.name,
               description: fd.description,
               inputSchema: {
-                json: fd.parameters as any,
+                json: parameters,
               },
             },
           });
@@ -178,7 +220,7 @@ export class BedrockContentGenerator implements ContentGenerator {
     return bedrockTools.length > 0 ? { tools: bedrockTools } : undefined;
   }
 
-  private mapResponse(response: any): GenerateContentResponse {
+  private mapResponse(response: any): any {
     const parts: Part[] = [];
     if (response.output?.message?.content) {
       for (const block of response.output.message.content) {
@@ -211,7 +253,7 @@ export class BedrockContentGenerator implements ContentGenerator {
         candidatesTokenCount: response.usage?.outputTokens,
         totalTokenCount: response.usage?.totalTokens,
       },
-    } as GenerateContentResponse;
+    };
   }
 
   private async *mapStreamResponse(stream: any): AsyncGenerator<GenerateContentResponse> {
@@ -235,7 +277,7 @@ export class BedrockContentGenerator implements ContentGenerator {
       }
 
       if (parts.length > 0 || finishReason || usage) {
-        yield {
+        yield this.ensureGenerateContentResponse({
           candidates: [
             {
               content: {
@@ -250,19 +292,19 @@ export class BedrockContentGenerator implements ContentGenerator {
             candidatesTokenCount: usage.outputTokens,
             totalTokenCount: usage.totalTokens,
           } : undefined,
-        } as GenerateContentResponse;
+        });
       }
     }
   }
 
-  private mapFinishReason(reason?: string): FinishReason {
+  private mapFinishReason(reason?: string): any {
     switch (reason) {
-      case 'end_turn': return FinishReason.STOP;
-      case 'max_tokens': return FinishReason.MAX_TOKENS;
-      case 'stop_sequence': return FinishReason.STOP;
-      case 'tool_use': return FinishReason.STOP;
-      case 'content_filtered': return FinishReason.SAFETY;
-      default: return FinishReason.OTHER;
+      case 'end_turn': return 'STOP';
+      case 'max_tokens': return 'MAX_TOKENS';
+      case 'stop_sequence': return 'STOP';
+      case 'tool_use': return 'STOP';
+      case 'content_filtered': return 'SAFETY';
+      default: return 'OTHER';
     }
   }
 }

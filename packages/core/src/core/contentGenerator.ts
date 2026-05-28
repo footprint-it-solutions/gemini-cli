@@ -93,11 +93,16 @@ export function getAuthTypeFromEnv(): AuthType | undefined {
   if (process.env['OPENAI_API_KEY']) {
     return AuthType.OPENAI;
   }
-  if (process.env['AWS_ACCESS_KEY_ID'] || process.env['AWS_PROFILE']) {
-    return AuthType.BEDROCK;
-  }
-  if (process.env['OLLAMA_HOST']) {
+  if (process.env['OLLAMA_BASE_URL']) {
     return AuthType.OLLAMA;
+  }
+  if (
+    process.env['AWS_ACCESS_KEY_ID'] ||
+    process.env['AWS_PROFILE'] ||
+    process.env['AWS_ROLE_ARN'] ||
+    process.env['AWS_WEB_IDENTITY_TOKEN_FILE']
+  ) {
+    return AuthType.BEDROCK;
   }
   if (process.env['GOOGLE_GEMINI_BASE_URL']) {
     return AuthType.GATEWAY;
@@ -111,7 +116,7 @@ export function getAuthTypeFromEnv(): AuthType | undefined {
   ) {
     return AuthType.COMPUTE_ADC;
   }
-  return undefined;
+  return AuthType.USE_GEMINI; // Default to Gemini
 }
 
 export type ContentGeneratorConfig = {
@@ -202,6 +207,7 @@ export async function createContentGeneratorConfig(
   }
 
   if (authType === AuthType.OLLAMA) {
+    contentGeneratorConfig.baseUrl = process.env['OLLAMA_BASE_URL'] || baseUrl;
     return contentGeneratorConfig;
   }
 
