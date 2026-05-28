@@ -21,7 +21,8 @@ export async function validateAuthMethodWithSettings(
   if (
     authMethod === AuthType.LOGIN_WITH_GOOGLE ||
     authMethod === AuthType.COMPUTE_ADC ||
-    authMethod === AuthType.GATEWAY
+    authMethod === AuthType.GATEWAY ||
+    authMethod === AuthType.OLLAMA
   ) {
     return null;
   }
@@ -71,11 +72,6 @@ export async function validateAuthMethodWithSettings(
     ) {
       return 'When using Bedrock, you must specify AWS credentials (e.g., AWS_ACCESS_KEY_ID, AWS_PROFILE, or AWS_ROLE_ARN).';
     }
-    return null;
-  }
-
-  if (authMethod === AuthType.OLLAMA) {
-    // Ollama doesn't strictly require a base URL in env if it's running on localhost:11434
     return null;
   }
 

@@ -53,7 +53,7 @@ describe('OpenAIContentGenerator', () => {
 
     mockOpenAI.chat.completions.create.mockResolvedValue(mockResponse);
 
-    const request = {
+    const request: any = {
       model: 'gpt-4o',
       contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
     };
@@ -76,7 +76,7 @@ describe('OpenAIContentGenerator', () => {
           choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }]
       });
 
-      const request = {
+      const request: any = {
           model: 'gpt-4o',
           contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
           config: {
@@ -120,7 +120,7 @@ describe('OpenAIContentGenerator', () => {
 
       mockOpenAI.chat.completions.create.mockResolvedValue(mockResponse);
 
-      const request = {
+      const request: any = {
           model: 'gpt-4o',
           contents: [{ role: 'user', parts: [{ text: 'Weather?' }] }],
           config: {
