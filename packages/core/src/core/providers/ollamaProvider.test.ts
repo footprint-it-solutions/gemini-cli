@@ -54,7 +54,7 @@ describe('OllamaContentGenerator', () => {
     expect(mockClient.chat).toHaveBeenCalledWith(expect.objectContaining({
       model: 'llama3',
       messages: [
-        { role: 'user', content: 'Hi', tool_calls: undefined }
+        { role: 'user', content: 'Hi' }
       ],
     }));
   });
