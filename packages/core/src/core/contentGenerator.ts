@@ -80,8 +80,9 @@ export enum AuthType {
  * 1. GOOGLE_GENAI_USE_GCA=true -> LOGIN_WITH_GOOGLE
  * 2. GOOGLE_GENAI_USE_VERTEXAI=true -> USE_VERTEX_AI
  * 3. OPENAI_API_KEY -> OPENAI
- * 4. AWS_ACCESS_KEY_ID -> BEDROCK
- * 5. GEMINI_API_KEY -> USE_GEMINI
+ * 4. OLLAMA_BASE_URL -> OLLAMA
+ * 5. AWS credentials -> BEDROCK
+ * 6. GEMINI_API_KEY -> USE_GEMINI
  */
 export function getAuthTypeFromEnv(): AuthType | undefined {
   if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {

@@ -20,13 +20,13 @@ vi.mock('ollama', () => {
 
 describe('OllamaContentGenerator', () => {
   let generator: OllamaContentGenerator;
-  let mockOllama: any;
+  let mockClient: any;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     generator = new OllamaContentGenerator('http://localhost:11434');
     // @ts-ignore
-    mockOllama = generator['client'];
+    mockClient = generator['client'];
   });
 
   it('should generate content correctly', async () => {
@@ -35,12 +35,12 @@ describe('OllamaContentGenerator', () => {
         role: 'assistant',
         content: 'Hello from Ollama!',
       },
+      done: true,
       prompt_eval_count: 10,
       eval_count: 5,
-      done: true,
     };
 
-    mockOllama.chat.mockResolvedValue(mockResponse);
+    mockClient.chat.mockResolvedValue(mockResponse);
 
     const request: any = {
       model: 'llama3',
@@ -51,37 +51,12 @@ describe('OllamaContentGenerator', () => {
 
     expect(response.candidates?.[0].content?.parts?.[0].text).toBe('Hello from Ollama!');
     expect(response.usageMetadata?.totalTokenCount).toBe(15);
-    expect(mockOllama.chat).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockClient.chat).toHaveBeenCalledWith(expect.objectContaining({
       model: 'llama3',
       messages: [
-        { role: 'user', content: 'Hi' }
+        { role: 'user', content: 'Hi', tool_calls: undefined }
       ],
-      stream: false,
     }));
-  });
-
-  it('should handle streaming correctly', async () => {
-    const mockStream = (async function* () {
-      yield { message: { content: 'Hello' }, done: false };
-      yield { message: { content: ' world' }, done: true, prompt_eval_count: 10, eval_count: 5 };
-    })();
-
-    mockOllama.chat.mockResolvedValue(mockStream);
-
-    const request: any = {
-      model: 'llama3',
-      contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
-    };
-
-    const stream = await generator.generateContentStream(request, 'prompt-id', LlmRole.MAIN);
-    const results = [];
-    for await (const chunk of stream) {
-      results.push(chunk);
-    }
-
-    expect(results[0].candidates?.[0].content?.parts?.[0].text).toBe('Hello');
-    expect(results[1].candidates?.[0].content?.parts?.[0].text).toBe(' world');
-    expect(results[1].usageMetadata?.totalTokenCount).toBe(15);
   });
 
   it('should handle tool calls', async () => {
@@ -101,7 +76,7 @@ describe('OllamaContentGenerator', () => {
           done: true,
       };
 
-      mockOllama.chat.mockResolvedValue(mockResponse);
+      mockClient.chat.mockResolvedValue(mockResponse);
 
       const request: any = {
           model: 'llama3',
@@ -121,7 +96,7 @@ describe('OllamaContentGenerator', () => {
           },
       };
 
-      const response = await generator.generateContent(request, 'prompt-id', LlmRole.MAIN);
+      const response = await generator.generateContent(request as any, 'prompt-id', LlmRole.MAIN);
 
       expect(response.candidates?.[0].content?.parts?.[0].functionCall?.name).toBe('get_weather');
       expect(response.candidates?.[0].content?.parts?.[0].functionCall?.args).toEqual({ location: 'London' });

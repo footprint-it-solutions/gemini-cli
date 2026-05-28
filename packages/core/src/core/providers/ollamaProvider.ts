@@ -100,7 +100,7 @@ export class OllamaContentGenerator implements ContentGenerator {
       if (typeof systemInstruction === 'string') {
         systemText = systemInstruction;
       } else if (Array.isArray(systemInstruction)) {
-        systemText = systemInstruction.map(p => p.text || '').join('\n');
+        systemText = systemInstruction.map(p => (p as any).text || '').join('\n');
       } else if (systemInstruction && 'parts' in systemInstruction && systemInstruction.parts) {
         systemText = systemInstruction.parts.map(p => p.text || '').join('\n');
       } else {

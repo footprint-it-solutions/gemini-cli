@@ -261,8 +261,7 @@ export class BedrockContentGenerator implements ContentGenerator {
 
     for await (const event of stream) {
       const parts: Part[] = [];
-      let finishReason: any;
-      let usage: any;
+      let finishReason: any;let usage: any;
 
       if (event.contentBlockDelta?.delta?.text) {
         parts.push({ text: event.contentBlockDelta.delta.text });
