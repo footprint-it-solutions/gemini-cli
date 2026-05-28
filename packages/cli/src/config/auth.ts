@@ -75,10 +75,5 @@ export async function validateAuthMethodWithSettings(
     return null;
   }
 
-  if (authMethod === AuthType.OLLAMA) {
-    // Ollama doesn't strictly require a base URL in env if it's running on localhost:11434
-    return null;
-  }
-
   return 'Invalid auth method selected.';
 }
