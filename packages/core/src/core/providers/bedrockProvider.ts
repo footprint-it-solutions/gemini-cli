@@ -44,8 +44,18 @@ export class BedrockContentGenerator implements ContentGenerator {
     const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
     const toolConfig = this.mapTools(request.config?.tools);
 
+    const modelIdRaw = request.model.startsWith('bedrock/') ? request.model.slice(8) : request.model;
+    let modelId = modelIdRaw;
+
+    // Support configurable Bedrock inference profile prefix (default to 'us')
+    // This allows users to use 'eu' or other supported prefixes for Nova models.
+    const bedrockPrefix = process.env['BEDROCK_PREFIX'] || 'us';
+    if (bedrockPrefix !== 'us' && modelId.startsWith('us.amazon.nova')) {
+      modelId = modelId.replace(/^us\./, `${bedrockPrefix}.`);
+    }
+
     const command = new ConverseCommand({
-      modelId: request.model,
+      modelId,
       messages,
       system,
       inferenceConfig: {
@@ -70,8 +80,17 @@ export class BedrockContentGenerator implements ContentGenerator {
     const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
     const toolConfig = this.mapTools(request.config?.tools);
 
+    const modelIdRaw = request.model.startsWith('bedrock/') ? request.model.slice(8) : request.model;
+    let modelId = modelIdRaw;
+
+    // Support configurable Bedrock inference profile prefix (default to 'us')
+    const bedrockPrefix = process.env['BEDROCK_PREFIX'] || 'us';
+    if (bedrockPrefix !== 'us' && modelId.startsWith('us.amazon.nova')) {
+      modelId = modelId.replace(/^us\./, `${bedrockPrefix}.`);
+    }
+
     const command = new ConverseStreamCommand({
-      modelId: request.model,
+      modelId,
       messages,
       system,
       inferenceConfig: {
@@ -88,7 +107,6 @@ export class BedrockContentGenerator implements ContentGenerator {
   }
 
   async countTokens(_request: CountTokensParameters): Promise<CountTokensResponse> {
-    // Bedrock doesn't have a standalone token count API that matches Gemini's exactly.
     return { totalTokens: 0 };
   }
 
@@ -138,7 +156,7 @@ export class BedrockContentGenerator implements ContentGenerator {
         if (part.functionResponse) {
           contentBlocks.push({
             toolResult: {
-              toolUseId: 'unknown', // Limitation again
+              toolUseId: 'unknown',
               content: [{ json: part.functionResponse.response as any }],
               status: 'success',
             },
@@ -181,12 +199,17 @@ export class BedrockContentGenerator implements ContentGenerator {
     for (const tool of tools) {
       if (tool.functionDeclarations) {
         for (const fd of tool.functionDeclarations) {
+          const parameters = fd.parameters as any;
+          // Bedrock requires non-empty inputSchema. Skip if no properties.
+          if (!parameters || !parameters.properties || Object.keys(parameters.properties).length === 0) {
+            continue;
+          }
           bedrockTools.push({
             toolSpec: {
               name: fd.name,
               description: fd.description,
               inputSchema: {
-                json: fd.parameters as any,
+                json: parameters,
               },
             },
           });
@@ -238,15 +261,10 @@ export class BedrockContentGenerator implements ContentGenerator {
 
     for await (const event of stream) {
       const parts: Part[] = [];
-      let finishReason: any;
-      let usage: any;
+      let finishReason: any;let usage: any;
 
       if (event.contentBlockDelta?.delta?.text) {
         parts.push({ text: event.contentBlockDelta.delta.text });
-      }
-
-      if (event.contentBlockStart?.start?.toolUse) {
-          // Tool use start
       }
 
       if (event.messageStop?.stopReason) {

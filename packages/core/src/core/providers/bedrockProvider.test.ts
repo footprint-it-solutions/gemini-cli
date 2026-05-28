@@ -49,7 +49,7 @@ describe('BedrockContentGenerator', () => {
 
     mockClient.send.mockResolvedValue(mockResponse);
 
-    const request = {
+    const request: any = {
       model: 'us.amazon.nova-2-lite-v1:0',
       contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
     };
@@ -87,7 +87,7 @@ describe('BedrockContentGenerator', () => {
 
       mockClient.send.mockResolvedValue(mockResponse);
 
-      const request = {
+      const request: any = {
           model: 'us.amazon.nova-2-lite-v1:0',
           contents: [{ role: 'user', parts: [{ text: 'Weather?' }] }],
           config: {
