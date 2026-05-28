@@ -244,6 +244,10 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
         },
       },
     },
+    'web-search-fallback': {
+      extends: 'gemini-3-flash-base',
+      modelConfig: {},
+    },
     'web-fetch': {
       extends: 'gemini-3-flash-base',
       modelConfig: {
