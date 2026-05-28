@@ -30,6 +30,9 @@ import { determineSurface } from '../utils/surface.js';
 import { RecordingContentGenerator } from './recordingContentGenerator.js';
 import { getVersion, resolveModel } from '../../index.js';
 import type { LlmRole } from '../telemetry/llmRole.js';
+import { OpenAIContentGenerator } from './providers/openAiProvider.js';
+import { BedrockContentGenerator } from './providers/bedrockProvider.js';
+import { OllamaContentGenerator } from './providers/ollamaProvider.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -65,6 +68,9 @@ export enum AuthType {
   LEGACY_CLOUD_SHELL = 'cloud-shell',
   COMPUTE_ADC = 'compute-default-credentials',
   GATEWAY = 'gateway',
+  OPENAI = 'openai',
+  BEDROCK = 'bedrock',
+  OLLAMA = 'ollama',
 }
 
 /**
@@ -73,7 +79,10 @@ export enum AuthType {
  * Checks in order:
  * 1. GOOGLE_GENAI_USE_GCA=true -> LOGIN_WITH_GOOGLE
  * 2. GOOGLE_GENAI_USE_VERTEXAI=true -> USE_VERTEX_AI
- * 3. GEMINI_API_KEY -> USE_GEMINI
+ * 3. OPENAI_API_KEY -> OPENAI
+ * 4. OLLAMA_BASE_URL -> OLLAMA
+ * 5. AWS credentials -> BEDROCK
+ * 6. GEMINI_API_KEY -> USE_GEMINI
  */
 export function getAuthTypeFromEnv(): AuthType | undefined {
   if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {
@@ -81,6 +90,20 @@ export function getAuthTypeFromEnv(): AuthType | undefined {
   }
   if (process.env['GOOGLE_GENAI_USE_VERTEXAI'] === 'true') {
     return AuthType.USE_VERTEX_AI;
+  }
+  if (process.env['OPENAI_API_KEY']) {
+    return AuthType.OPENAI;
+  }
+  if (process.env['OLLAMA_BASE_URL']) {
+    return AuthType.OLLAMA;
+  }
+  if (
+    process.env['AWS_ACCESS_KEY_ID'] ||
+    process.env['AWS_PROFILE'] ||
+    process.env['AWS_ROLE_ARN'] ||
+    process.env['AWS_WEB_IDENTITY_TOKEN_FILE']
+  ) {
+    return AuthType.BEDROCK;
   }
   if (process.env['GOOGLE_GEMINI_BASE_URL']) {
     return AuthType.GATEWAY;
@@ -94,7 +117,7 @@ export function getAuthTypeFromEnv(): AuthType | undefined {
   ) {
     return AuthType.COMPUTE_ADC;
   }
-  return undefined;
+  return AuthType.USE_GEMINI; // Default to Gemini
 }
 
 export type ContentGeneratorConfig = {
@@ -169,6 +192,23 @@ export async function createContentGeneratorConfig(
     contentGeneratorConfig.apiKey = geminiApiKey;
     contentGeneratorConfig.vertexai = false;
 
+    return contentGeneratorConfig;
+  }
+
+  if (authType === AuthType.OPENAI) {
+    contentGeneratorConfig.apiKey = process.env['OPENAI_API_KEY'] || apiKey;
+    return contentGeneratorConfig;
+  }
+
+  if (authType === AuthType.BEDROCK) {
+    // Bedrock usually uses AWS credentials (env vars or profile), 
+    // so we don't necessarily need an 'apiKey' field here, 
+    // but we can pass whatever is provided.
+    return contentGeneratorConfig;
+  }
+
+  if (authType === AuthType.OLLAMA) {
+    contentGeneratorConfig.baseUrl = process.env['OLLAMA_BASE_URL'] || baseUrl;
     return contentGeneratorConfig;
   }
 
@@ -290,6 +330,27 @@ export async function createContentGenerator(
           gcConfig,
           sessionId,
         ),
+        gcConfig,
+      );
+    }
+
+    if (config.authType === AuthType.OPENAI) {
+      return new LoggingContentGenerator(
+        new OpenAIContentGenerator(config.apiKey || '', config.baseUrl),
+        gcConfig,
+      );
+    }
+
+    if (config.authType === AuthType.BEDROCK) {
+      return new LoggingContentGenerator(
+        new BedrockContentGenerator(process.env['AWS_REGION']),
+        gcConfig,
+      );
+    }
+
+    if (config.authType === AuthType.OLLAMA) {
+      return new LoggingContentGenerator(
+        new OllamaContentGenerator(config.baseUrl),
         gcConfig,
       );
     }

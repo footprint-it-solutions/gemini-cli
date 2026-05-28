@@ -4,257 +4,97 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type React from 'react';
-import { useCallback, useState } from 'react';
-import { Box, Text } from 'ink';
-import { theme } from '../semantic-colors.js';
-import { RadioButtonSelect } from '../components/shared/RadioButtonSelect.js';
-import {
-  SettingScope,
-  type LoadableSettingScope,
-  type LoadedSettings,
-} from '../../config/settings.js';
-import {
-  AuthType,
-  clearCachedCredentialFile,
-  type Config,
-} from '@google/gemini-cli-core';
-import { useKeypress } from '../hooks/useKeypress.js';
-import { AuthState } from '../types.js';
-import { validateAuthMethodWithSettings } from './useAuth.js';
-import { relaunchApp } from '../../utils/processUtils.js';
+import { AuthType } from '@google/gemini-cli-core';
+import { Box, Text, useInput } from 'ink';
+import { useState, useCallback } from 'react';
+import { SelectionList } from '../components/SelectionList.js';
+import { validateAuthMethod } from '../../config/auth.js';
 
-interface AuthDialogProps {
-  config: Config;
-  settings: LoadedSettings;
-  setAuthState: (state: AuthState) => void;
-  authError: string | null;
-  onAuthError: (error: string | null) => void;
-  setAuthContext: (context: { requiresRestart?: boolean }) => void;
+export interface AuthDialogProps {
+  onAuthSelected: (authType: AuthType, apiKey?: string) => void;
+  onCancel: () => void;
+  initialAuthType?: AuthType;
 }
 
 export function AuthDialog({
-  config,
-  settings,
-  setAuthState,
-  authError,
-  onAuthError,
-  setAuthContext,
-}: AuthDialogProps): React.JSX.Element {
-  const [exiting, setExiting] = useState(false);
-  let items = [
+  onAuthSelected,
+  onCancel,
+  initialAuthType,
+}: AuthDialogProps) {
+  const [selectedType, setSelectedType] = useState<AuthType>(
+    initialAuthType || AuthType.LOGIN_WITH_GOOGLE,
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const authOptions = [
     {
-      label: 'Sign in with Google',
+      label: 'Log in with Google (OAuth)',
       value: AuthType.LOGIN_WITH_GOOGLE,
-      key: AuthType.LOGIN_WITH_GOOGLE,
     },
-    ...(process.env['CLOUD_SHELL'] === 'true'
-      ? [
-          {
-            label: 'Use Cloud Shell user credentials',
-            value: AuthType.COMPUTE_ADC,
-            key: AuthType.COMPUTE_ADC,
-          },
-        ]
-      : process.env['GEMINI_CLI_USE_COMPUTE_ADC'] === 'true'
-        ? [
-            {
-              label: 'Use metadata server application default credentials',
-              value: AuthType.COMPUTE_ADC,
-              key: AuthType.COMPUTE_ADC,
-            },
-          ]
-        : []),
     {
-      label: 'Use Gemini API Key',
+      label: 'Gemini API Key',
       value: AuthType.USE_GEMINI,
-      key: AuthType.USE_GEMINI,
     },
     {
-      label: 'Vertex AI',
+      label: 'Vertex AI (GCP)',
       value: AuthType.USE_VERTEX_AI,
-      key: AuthType.USE_VERTEX_AI,
+    },
+    {
+      label: 'OpenAI API',
+      value: AuthType.OPENAI,
+    },
+    {
+      label: 'Amazon Bedrock',
+      value: AuthType.BEDROCK,
+    },
+    {
+      label: 'Ollama (Local)',
+      value: AuthType.OLLAMA,
+    },
+    {
+      label: 'AI API Gateway',
+      value: AuthType.GATEWAY,
     },
   ];
 
-  if (settings.merged.security.auth.enforcedType) {
-    items = items.filter(
-      (item) => item.value === settings.merged.security.auth.enforcedType,
-    );
-  }
-
-  let defaultAuthType = null;
-  const defaultAuthTypeEnv = process.env['GEMINI_DEFAULT_AUTH_TYPE'];
-  if (
-    defaultAuthTypeEnv &&
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    Object.values(AuthType).includes(defaultAuthTypeEnv as AuthType)
-  ) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    defaultAuthType = defaultAuthTypeEnv as AuthType;
-  }
-
-  let initialAuthIndex = items.findIndex((item) => {
-    if (settings.merged.security.auth.selectedType) {
-      return item.value === settings.merged.security.auth.selectedType;
-    }
-
-    if (defaultAuthType) {
-      return item.value === defaultAuthType;
-    }
-
-    if (process.env['GEMINI_API_KEY']) {
-      return item.value === AuthType.USE_GEMINI;
-    }
-
-    return item.value === AuthType.LOGIN_WITH_GOOGLE;
-  });
-  if (settings.merged.security.auth.enforcedType) {
-    initialAuthIndex = 0;
-  }
-
-  const onSelect = useCallback(
-    async (authType: AuthType | undefined, scope: LoadableSettingScope) => {
-      if (exiting) {
+  const handleSelect = useCallback(
+    async (item: { value: AuthType }) => {
+      const validationError = await validateAuthMethod(item.value);
+      if (validationError) {
+        setError(validationError);
         return;
       }
-      if (authType) {
-        const needsRestart =
-          authType === AuthType.LOGIN_WITH_GOOGLE ||
-          (authType === AuthType.USE_VERTEX_AI &&
-            process.env['CLOUD_SHELL'] === 'true');
-
-        if (needsRestart) {
-          setAuthContext({ requiresRestart: true });
-        } else {
-          setAuthContext({});
-        }
-        await clearCachedCredentialFile();
-
-        settings.setValue(scope, 'security.auth.selectedType', authType);
-        if (
-          authType === AuthType.LOGIN_WITH_GOOGLE &&
-          config.isBrowserLaunchSuppressed()
-        ) {
-          setExiting(true);
-          setTimeout(relaunchApp, 100);
-          return;
-        }
-
-        if (authType === AuthType.USE_GEMINI) {
-          // Always show the API key input dialog so the user can
-          // explicitly enter or confirm their key, regardless of
-          // whether GEMINI_API_KEY env var or a stored key exists.
-          setAuthState(AuthState.AwaitingApiKeyInput);
-          return;
-        }
-      }
-      setAuthState(AuthState.Unauthenticated);
+      onAuthSelected(item.value);
     },
-    [settings, config, setAuthState, exiting, setAuthContext],
+    [onAuthSelected],
   );
 
-  const handleAuthSelect = async (authMethod: AuthType) => {
-    const error = await validateAuthMethodWithSettings(
-      authMethod,
-      settings,
-    ).catch((e) => (e instanceof Error ? e.message : String(e)));
-    if (error) {
-      onAuthError(error);
-    } else {
-      // eslint-disable-next-line @typescript-eslint/no-floating-promises
-      onSelect(authMethod, SettingScope.User);
+  useInput((_input, key) => {
+    if (key.escape) {
+      onCancel();
     }
-  };
-
-  useKeypress(
-    (key) => {
-      if (key.name === 'escape') {
-        // Prevent exit if there is an error message.
-        // This means they user is not authenticated yet.
-        if (authError) {
-          return true;
-        }
-        if (settings.merged.security.auth.selectedType === undefined) {
-          // Prevent exiting if no auth method is set
-          onAuthError(
-            'You must select an auth method to proceed. Press Ctrl+C twice to exit.',
-          );
-          return true;
-        }
-        // eslint-disable-next-line @typescript-eslint/no-floating-promises
-        onSelect(undefined, SettingScope.User);
-        return true;
-      }
-      return false;
-    },
-    { isActive: true },
-  );
-
-  if (exiting) {
-    return (
-      <Box
-        borderStyle="round"
-        borderColor={theme.ui.focus}
-        flexDirection="row"
-        padding={1}
-        width="100%"
-        alignItems="flex-start"
-      >
-        <Text color={theme.text.primary}>
-          Logging in with Google... Restarting Gemini CLI to continue.
-        </Text>
-      </Box>
-    );
-  }
+  });
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor={theme.ui.focus}
-      flexDirection="row"
-      padding={1}
-      width="100%"
-      alignItems="flex-start"
-    >
-      <Text color={theme.text.accent}>? </Text>
-      <Box flexDirection="column" flexGrow={1}>
-        <Text bold color={theme.text.primary}>
-          Get started
-        </Text>
+    <Box flexDirection="column" padding={1} borderStyle="round">
+      <Box marginBottom={1}>
+        <Text bold>Select Authentication Method</Text>
+      </Box>
+
+      <SelectionList
+        items={authOptions}
+        onSelect={handleSelect}
+        initialIndex={authOptions.findIndex((o) => o.value === selectedType)}
+      />
+
+      {error && (
         <Box marginTop={1}>
-          <Text color={theme.text.primary}>
-            How would you like to authenticate for this project?
-          </Text>
+          <Text color="red">{error}</Text>
         </Box>
-        <Box marginTop={1}>
-          <RadioButtonSelect
-            items={items}
-            initialIndex={initialAuthIndex}
-            onSelect={handleAuthSelect}
-            onHighlight={() => {
-              onAuthError(null);
-            }}
-          />
-        </Box>
-        {authError && (
-          <Box marginTop={1}>
-            <Text color={theme.status.error}>{authError}</Text>
-          </Box>
-        )}
-        <Box marginTop={1}>
-          <Text color={theme.text.secondary}>(Use Enter to select)</Text>
-        </Box>
-        <Box marginTop={1}>
-          <Text color={theme.text.primary}>
-            Terms of Services and Privacy Notice for Gemini CLI
-          </Text>
-        </Box>
-        <Box marginTop={1}>
-          <Text color={theme.text.link}>
-            {'https://geminicli.com/docs/resources/tos-privacy/'}
-          </Text>
-        </Box>
+      )}
+
+      <Box marginTop={1}>
+        <Text dimColor>Press ESC to cancel</Text>
       </Box>
     </Box>
   );
