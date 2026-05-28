@@ -13,15 +13,15 @@ import {
   type Tool,
   type ContentBlock,
 } from '@aws-sdk/client-bedrock-runtime';
-import type {
-  GenerateContentParameters,
+import {
+  type GenerateContentParameters,
   GenerateContentResponse,
-  CountTokensParameters,
-  CountTokensResponse,
-  EmbedContentParameters,
-  EmbedContentResponse,
-  Content,
-  Part,
+  type CountTokensParameters,
+  type CountTokensResponse,
+  type EmbedContentParameters,
+  type EmbedContentResponse,
+  type Content,
+  type Part,
 } from '@google/genai';
 import type { ContentGenerator } from '../contentGenerator.js';
 import type { LlmRole } from '../../telemetry/llmRole.js';
@@ -40,8 +40,8 @@ export class BedrockContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<GenerateContentResponse> {
-    const messages = this.mapContentsToMessages(request.contents);
-    const system = this.mapSystemInstruction(request.config?.systemInstruction);
+    const messages = this.mapContentsToMessages(this.ensureContentArray(request.contents));
+    const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
     const toolConfig = this.mapTools(request.config?.tools);
 
     const command = new ConverseCommand({
@@ -58,7 +58,7 @@ export class BedrockContentGenerator implements ContentGenerator {
     });
 
     const response = await this.client.send(command);
-    return this.mapResponse(response);
+    return this.ensureGenerateContentResponse(this.mapResponse(response));
   }
 
   async generateContentStream(
@@ -66,8 +66,8 @@ export class BedrockContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
-    const messages = this.mapContentsToMessages(request.contents);
-    const system = this.mapSystemInstruction(request.config?.systemInstruction);
+    const messages = this.mapContentsToMessages(this.ensureContentArray(request.contents));
+    const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
     const toolConfig = this.mapTools(request.config?.tools);
 
     const command = new ConverseStreamCommand({
@@ -96,6 +96,25 @@ export class BedrockContentGenerator implements ContentGenerator {
     throw new Error('Embeddings not yet implemented for Bedrock provider.');
   }
 
+  private ensureContentArray(contents: any): Content[] {
+    if (!contents) return [];
+    if (Array.isArray(contents)) {
+      return contents.map(c => {
+        if (typeof c === 'string') return { role: 'user', parts: [{ text: c }] };
+        if (c.text) return { role: 'user', parts: [c] };
+        return c;
+      });
+    }
+    if (typeof contents === 'string') return [{ role: 'user', parts: [{ text: contents }] }];
+    if (contents.text) return [{ role: 'user', parts: [contents] }];
+    return [contents];
+  }
+
+  private ensureGenerateContentResponse(obj: any): GenerateContentResponse {
+    Object.setPrototypeOf(obj, GenerateContentResponse.prototype);
+    return obj as GenerateContentResponse;
+  }
+
   private mapContentsToMessages(contents: Content[]): Message[] {
     const messages: Message[] = [];
 
@@ -112,7 +131,7 @@ export class BedrockContentGenerator implements ContentGenerator {
             toolUse: {
               toolUseId: `call_${Math.random().toString(36).substring(7)}`,
               name: part.functionCall.name,
-              input: part.functionCall.args,
+              input: part.functionCall.args as any,
             },
           });
         }
@@ -120,7 +139,7 @@ export class BedrockContentGenerator implements ContentGenerator {
           contentBlocks.push({
             toolResult: {
               toolUseId: 'unknown', // Limitation again
-              content: [{ json: part.functionResponse.response }],
+              content: [{ json: part.functionResponse.response as any }],
               status: 'success',
             },
           });
@@ -145,9 +164,9 @@ export class BedrockContentGenerator implements ContentGenerator {
     if (typeof systemInstruction === 'string') {
       text = systemInstruction;
     } else if (Array.isArray(systemInstruction)) {
-      text = systemInstruction.map(p => p.text || '').join('\n');
+      text = systemInstruction.map(p => (p as any).text || '').join('\n');
     } else if ('parts' in systemInstruction) {
-      text = systemInstruction.parts.map(p => p.text || '').join('\n');
+      text = (systemInstruction.parts as any[]).map(p => p.text || '').join('\n');
     } else {
       text = (systemInstruction as Part).text || '';
     }
@@ -167,7 +186,7 @@ export class BedrockContentGenerator implements ContentGenerator {
               name: fd.name,
               description: fd.description,
               inputSchema: {
-                json: fd.parameters,
+                json: fd.parameters as any,
               },
             },
           });
@@ -178,7 +197,7 @@ export class BedrockContentGenerator implements ContentGenerator {
     return bedrockTools.length > 0 ? { tools: bedrockTools } : undefined;
   }
 
-  private mapResponse(response: any): GenerateContentResponse {
+  private mapResponse(response: any): any {
     const parts: Part[] = [];
     if (response.output?.message?.content) {
       for (const block of response.output.message.content) {
@@ -239,7 +258,7 @@ export class BedrockContentGenerator implements ContentGenerator {
       }
 
       if (parts.length > 0 || finishReason || usage) {
-        yield {
+        yield this.ensureGenerateContentResponse({
           candidates: [
             {
               content: {
@@ -254,7 +273,7 @@ export class BedrockContentGenerator implements ContentGenerator {
             candidatesTokenCount: usage.outputTokens,
             totalTokenCount: usage.totalTokens,
           } : undefined,
-        };
+        });
       }
     }
   }

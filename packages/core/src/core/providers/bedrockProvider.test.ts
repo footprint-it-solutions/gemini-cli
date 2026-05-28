@@ -105,7 +105,7 @@ describe('BedrockContentGenerator', () => {
           },
       };
 
-      const response = await generator.generateContent(request, 'prompt-id', LlmRole.MAIN);
+      const response = await generator.generateContent(request as any, 'prompt-id', LlmRole.MAIN);
 
       expect(response.candidates?.[0].content?.parts?.[0].functionCall?.name).toBe('get_weather');
       expect(response.candidates?.[0].content?.parts?.[0].functionCall?.args).toEqual({ location: 'London' });

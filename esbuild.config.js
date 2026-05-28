@@ -64,6 +64,9 @@ const external = [
   '@lydell/node-pty-win32-x64',
   '@github/keytar',
   '@google/gemini-cli-devtools',
+  '@aws-sdk/client-bedrock-runtime',
+  '@aws-sdk/credential-providers',
+  '@aws-sdk/credential-provider-node',
 ];
 
 const baseConfig = {

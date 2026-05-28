@@ -7,6 +7,12 @@
 import { AuthType, loadApiKey } from '@google/gemini-cli-core';
 import { loadEnvironment, loadSettings } from './settings.js';
 
+export async function validateAuthMethod(
+  authMethod: AuthType,
+): Promise<string | null> {
+  return validateAuthMethodWithSettings(authMethod, undefined);
+}
+
 export async function validateAuthMethodWithSettings(
   authMethod: AuthType,
   settings: any,
@@ -21,7 +27,7 @@ export async function validateAuthMethodWithSettings(
   }
 
   if (authMethod === AuthType.USE_GEMINI) {
-    const apiKey = await loadApiKey(settings);
+    const apiKey = await loadApiKey();
     if (!apiKey && !process.env['GEMINI_API_KEY']) {
       return (
         'When using Gemini API key, you must specify the GEMINI_API_KEY environment variable\n' +
@@ -56,10 +62,20 @@ export async function validateAuthMethodWithSettings(
 
   if (authMethod === AuthType.BEDROCK) {
     // Bedrock typically uses AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, etc.
-    // or AWS_PROFILE.
-    if (!process.env['AWS_ACCESS_KEY_ID'] && !process.env['AWS_PROFILE']) {
-      return 'When using Bedrock, you must specify AWS credentials (e.g., AWS_ACCESS_KEY_ID or AWS_PROFILE).';
+    // or AWS_PROFILE, or IRSA (AWS_ROLE_ARN).
+    if (
+      !process.env['AWS_ACCESS_KEY_ID'] &&
+      !process.env['AWS_PROFILE'] &&
+      !process.env['AWS_ROLE_ARN'] &&
+      !process.env['AWS_WEB_IDENTITY_TOKEN_FILE']
+    ) {
+      return 'When using Bedrock, you must specify AWS credentials (e.g., AWS_ACCESS_KEY_ID, AWS_PROFILE, or AWS_ROLE_ARN).';
     }
+    return null;
+  }
+
+  if (authMethod === AuthType.OLLAMA) {
+    // Ollama doesn't strictly require a base URL in env if it's running on localhost:11434
     return null;
   }
 

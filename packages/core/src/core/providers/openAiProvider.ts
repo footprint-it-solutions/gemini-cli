@@ -5,15 +5,15 @@
  */
 
 import OpenAI from 'openai';
-import type {
-  GenerateContentParameters,
+import {
+  type GenerateContentParameters,
   GenerateContentResponse,
-  CountTokensParameters,
-  CountTokensResponse,
-  EmbedContentParameters,
-  EmbedContentResponse,
-  Content,
-  Part,
+  type CountTokensParameters,
+  type CountTokensResponse,
+  type EmbedContentParameters,
+  type EmbedContentResponse,
+  type Content,
+  type Part,
 } from '@google/genai';
 import type { ContentGenerator } from '../contentGenerator.js';
 import type { LlmRole } from '../../telemetry/llmRole.js';
@@ -33,7 +33,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<GenerateContentResponse> {
-    const messages = this.mapContentsToMessages(request.contents, request.config?.systemInstruction);
+    const messages = this.mapContentsToMessages(this.ensureContentArray(request.contents), request.config?.systemInstruction as any);
     const tools = this.mapTools(request.config?.tools);
 
     const response = await this.client.chat.completions.create({
@@ -47,7 +47,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
       response_format: request.config?.responseMimeType === 'application/json' ? { type: 'json_object' } : undefined,
     });
 
-    return this.mapResponse(response);
+    return this.ensureGenerateContentResponse(this.mapResponse(response));
   }
 
   async generateContentStream(
@@ -55,7 +55,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
-    const messages = this.mapContentsToMessages(request.contents, request.config?.systemInstruction);
+    const messages = this.mapContentsToMessages(this.ensureContentArray(request.contents), request.config?.systemInstruction as any);
     const tools = this.mapTools(request.config?.tools);
 
     const stream = await this.client.chat.completions.create({
@@ -82,6 +82,25 @@ export class OpenAIContentGenerator implements ContentGenerator {
     throw new Error('Embeddings not yet implemented for OpenAI provider.');
   }
 
+  private ensureContentArray(contents: any): Content[] {
+    if (!contents) return [];
+    if (Array.isArray(contents)) {
+      return contents.map(c => {
+        if (typeof c === 'string') return { role: 'user', parts: [{ text: c }] };
+        if (c.text) return { role: 'user', parts: [c] };
+        return c;
+      });
+    }
+    if (typeof contents === 'string') return [{ role: 'user', parts: [{ text: contents }] }];
+    if (contents.text) return [{ role: 'user', parts: [contents] }];
+    return [contents];
+  }
+
+  private ensureGenerateContentResponse(obj: any): GenerateContentResponse {
+    Object.setPrototypeOf(obj, GenerateContentResponse.prototype);
+    return obj as GenerateContentResponse;
+  }
+
   private mapContentsToMessages(contents: Content[], systemInstruction?: string | Part | Part[] | Content): OpenAI.Chat.ChatCompletionMessageParam[] {
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
@@ -90,9 +109,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
       if (typeof systemInstruction === 'string') {
         systemText = systemInstruction;
       } else if (Array.isArray(systemInstruction)) {
-        systemText = systemInstruction.map(p => p.text || '').join('\n');
+        systemText = systemInstruction.map(p => (p as any).text || '').join('\n');
       } else if ('parts' in systemInstruction) {
-        systemText = systemInstruction.parts.map(p => p.text || '').join('\n');
+        systemText = (systemInstruction.parts as any[]).map(p => p.text || '').join('\n');
       } else {
         systemText = (systemInstruction as Part).text || '';
       }
@@ -119,7 +138,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
             id: `call_${Math.random().toString(36).substring(7)}`, // OpenAI needs an ID
             type: 'function',
             function: {
-              name: part.functionCall.name,
+              name: part.functionCall.name || '',
               arguments: JSON.stringify(part.functionCall.args),
             },
           });
@@ -140,12 +159,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
                   role: 'assistant',
                   content: textContent || null,
                   tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-              });
+              } as any);
           } else {
               messages.push({
                   role: 'user',
                   content: textContent,
-              });
+              } as any);
           }
       }
     }
@@ -165,7 +184,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
             function: {
               name: fd.name,
               description: fd.description,
-              parameters: fd.parameters,
+              parameters: fd.parameters as any,
             },
           });
         }
@@ -174,7 +193,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
     return openAiTools.length > 0 ? openAiTools : undefined;
   }
 
-  private mapResponse(response: OpenAI.Chat.ChatCompletion): GenerateContentResponse {
+  private mapResponse(response: OpenAI.Chat.ChatCompletion): any {
     const choice = response.choices[0];
     const parts: Part[] = [];
 
@@ -184,10 +203,11 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
     if (choice.message.tool_calls) {
       for (const tc of choice.message.tool_calls) {
+        const toolCall = tc as any;
         parts.push({
           functionCall: {
-            name: tc.function.name,
-            args: JSON.parse(tc.function.arguments),
+            name: toolCall.function.name,
+            args: JSON.parse(toolCall.function.arguments),
           },
         });
       }
@@ -237,7 +257,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         }
       }
 
-      yield {
+      yield this.ensureGenerateContentResponse({
         candidates: [
           {
             content: {
@@ -248,7 +268,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
           },
         ],
         responseId: chunk.id,
-      };
+      });
     }
   }
 
