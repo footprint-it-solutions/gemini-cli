@@ -147,8 +147,8 @@ export class BedrockContentGenerator implements ContentGenerator {
         if (part.functionCall) {
           contentBlocks.push({
             toolUse: {
-              toolUseId: `call_${Math.random().toString(36).substring(7)}`,
-              name: part.functionCall.name,
+              toolUseId: part.functionCall.id || `call_${Math.random().toString(36).substring(7)}`,
+              name: part.functionCall.name || '',
               input: part.functionCall.args as any,
             },
           });
@@ -156,8 +156,8 @@ export class BedrockContentGenerator implements ContentGenerator {
         if (part.functionResponse) {
           contentBlocks.push({
             toolResult: {
-              toolUseId: 'unknown',
-              content: [{ json: part.functionResponse.response as any }],
+              toolUseId: part.functionResponse.id || 'unknown',
+              content: [{ json: (part.functionResponse as any).response || part.functionResponse }],
               status: 'success',
             },
           });
@@ -230,6 +230,7 @@ export class BedrockContentGenerator implements ContentGenerator {
         if (block.toolUse) {
           parts.push({
             functionCall: {
+              id: block.toolUse.toolUseId,
               name: block.toolUse.name,
               args: block.toolUse.input,
             },
@@ -259,12 +260,44 @@ export class BedrockContentGenerator implements ContentGenerator {
   private async *mapStreamResponse(stream: any): AsyncGenerator<GenerateContentResponse> {
     if (!stream) return;
 
+    let currentToolUse: { id: string; name: string; input: string } | undefined;
+
     for await (const event of stream) {
       const parts: Part[] = [];
-      let finishReason: any;let usage: any;
+      let finishReason: any;
+      let usage: any;
+
+      if (event.contentBlockStart?.start?.toolUse) {
+        currentToolUse = {
+          id: event.contentBlockStart.start.toolUse.toolUseId,
+          name: event.contentBlockStart.start.toolUse.name,
+          input: '',
+        };
+      }
+
+      if (event.contentBlockDelta?.delta?.toolUse?.input) {
+        if (currentToolUse) {
+          currentToolUse.input += event.contentBlockDelta.delta.toolUse.input;
+        }
+      }
 
       if (event.contentBlockDelta?.delta?.text) {
         parts.push({ text: event.contentBlockDelta.delta.text });
+      }
+
+      if (event.contentBlockStop && currentToolUse) {
+        try {
+          parts.push({
+            functionCall: {
+              id: currentToolUse.id,
+              name: currentToolUse.name,
+              args: currentToolUse.input ? JSON.parse(currentToolUse.input) : {},
+            },
+          });
+        } catch (e) {
+          console.error('Failed to parse tool use input JSON:', currentToolUse.input);
+        }
+        currentToolUse = undefined;
       }
 
       if (event.messageStop?.stopReason) {
