@@ -7,7 +7,7 @@
 import { AuthType } from '@google/gemini-cli-core';
 import { Box, Text, useInput } from 'ink';
 import { useState, useCallback } from 'react';
-import { SelectionList } from '../components/SelectionList.js';
+import { RadioButtonSelect } from '../components/shared/RadioButtonSelect.js';
 import { validateAuthMethod } from '../../config/auth.js';
 
 export interface AuthDialogProps {
@@ -81,7 +81,7 @@ export function AuthDialog({
         <Text bold>Select Authentication Method</Text>
       </Box>
 
-      <SelectionList
+      <RadioButtonSelect
         items={authOptions}
         onSelect={handleSelect}
         initialIndex={authOptions.findIndex((o) => o.value === selectedType)}
