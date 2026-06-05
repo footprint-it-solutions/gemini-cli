@@ -15,6 +15,8 @@ import {
   getScriptArgs,
 } from './src/utils/processUtils.js';
 
+export { GeminiSession } from './src/GeminiSession.js';
+
 // --- Global Entry Point ---
 
 // Suppress known race condition error in node-pty on Windows
@@ -183,4 +185,10 @@ async function run() {
   }
 }
 
-run();
+// Only run if this is the main module
+import { fileURLToPath } from 'node:url';
+const isMain = process.argv[1] && (fileURLToPath(import.meta.url) === process.argv[1]);
+
+if (isMain || process.env.GEMINI_CLI_RUN_AS_MAIN === 'true') {
+  run();
+}
