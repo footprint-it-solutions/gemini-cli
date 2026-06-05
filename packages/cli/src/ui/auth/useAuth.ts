@@ -13,6 +13,7 @@ import {
   debugLogger,
   isAccountSuspendedError,
   ProjectIdRequiredError,
+  getAuthTypeFromEnv,
 } from '@google/gemini-cli-core';
 import { getErrorMessage } from '@google/gemini-cli-core';
 import { AuthState } from '../types.js';
@@ -91,10 +92,8 @@ export const useAuthCommand = (
         return;
       }
 
-      let authType = settings.merged.security.auth.selectedType;
-      if (!authType) {
-        authType = getAuthTypeFromEnv();
-      }
+      const authType =
+        getAuthTypeFromEnv() || settings.merged.security.auth.selectedType;
 
       if (!authType) {
         if (process.env['GEMINI_API_KEY']) {
