@@ -101,7 +101,8 @@ export function getAuthTypeFromEnv(): AuthType | undefined {
     process.env['AWS_ACCESS_KEY_ID'] ||
     process.env['AWS_PROFILE'] ||
     process.env['AWS_ROLE_ARN'] ||
-    process.env['AWS_WEB_IDENTITY_TOKEN_FILE']
+    process.env['AWS_WEB_IDENTITY_TOKEN_FILE'] ||
+    process.env['BEDROCK_REGION']
   ) {
     return AuthType.BEDROCK;
   }
@@ -117,7 +118,7 @@ export function getAuthTypeFromEnv(): AuthType | undefined {
   ) {
     return AuthType.COMPUTE_ADC;
   }
-  return AuthType.USE_GEMINI; // Default to Gemini
+  return undefined;
 }
 
 export type ContentGeneratorConfig = {
