@@ -193,12 +193,14 @@ export class BedrockContentGenerator implements ContentGenerator {
   }
 
   private mapTools(tools?: any[]): { tools: Tool[] } | undefined {
+    console.log(`[BedrockProvider] Mapping ${tools?.length || 0} tools`);
     if (!tools || tools.length === 0) return undefined;
 
     const bedrockTools: Tool[] = [];
     for (const tool of tools) {
       if (tool.functionDeclarations) {
         for (const fd of tool.functionDeclarations) {
+          console.log(`[BedrockProvider] Mapping tool: ${fd.name}`);
           const parameters = fd.parameters as any;
           // Bedrock requires non-empty inputSchema. Skip if no properties.
           if (!parameters || !parameters.properties || Object.keys(parameters.properties).length === 0) {
