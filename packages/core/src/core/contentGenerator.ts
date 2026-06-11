@@ -85,6 +85,16 @@ export enum AuthType {
  * 6. GEMINI_API_KEY -> USE_GEMINI
  */
 export function getAuthTypeFromEnv(): AuthType | undefined {
+  const model = process.env['GEMINI_MODEL'];
+  if (model?.startsWith('bedrock/')) {
+    return AuthType.BEDROCK;
+  }
+  if (model?.startsWith('openai/')) {
+    return AuthType.OPENAI;
+  }
+  if (model?.startsWith('ollama/')) {
+    return AuthType.OLLAMA;
+  }
   if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {
     return AuthType.LOGIN_WITH_GOOGLE;
   }
@@ -102,7 +112,8 @@ export function getAuthTypeFromEnv(): AuthType | undefined {
     process.env['AWS_PROFILE'] ||
     process.env['AWS_ROLE_ARN'] ||
     process.env['AWS_WEB_IDENTITY_TOKEN_FILE'] ||
-    process.env['BEDROCK_REGION']
+    process.env['BEDROCK_REGION'] ||
+    process.env['AWS_REGION']
   ) {
     return AuthType.BEDROCK;
   }
