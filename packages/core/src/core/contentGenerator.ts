@@ -355,7 +355,9 @@ export async function createContentGenerator(
 
     if (config.authType === AuthType.BEDROCK) {
       return new LoggingContentGenerator(
-        new BedrockContentGenerator(process.env['AWS_REGION']),
+        new BedrockContentGenerator(
+          process.env['BEDROCK_REGION'] || process.env['AWS_REGION'],
+        ),
         gcConfig,
       );
     }
