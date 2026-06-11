@@ -76,7 +76,7 @@ async function getMemoryNodeArgs(): Promise<string[]> {
   return [];
 }
 
-async function run() {
+export async function run() {
   if (!process.env['GEMINI_CLI_NO_RELAUNCH'] && !process.env['SANDBOX']) {
     // --- Lightweight Parent Process / Daemon ---
     // We avoid importing heavy dependencies here to save ~1.5s of startup time.
