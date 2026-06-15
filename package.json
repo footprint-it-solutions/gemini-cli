@@ -153,6 +153,7 @@
     "web-tree-sitter": "^0.26.9",
     "@aws-sdk/client-bedrock-runtime": "^3.714.0",
     "@aws-sdk/credential-providers": "^3.714.0",
+    "@google/genai": "1.30.0",
     "@lydell/node-pty": "1.1.0",
     "@github/keytar": "^7.10.6",
     "openai": "^4.76.0",
