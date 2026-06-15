@@ -8,12 +8,17 @@ import type { FunctionCall } from '@google/genai';
 import { debugLogger } from './debugLogger.js';
 
 /**
- * Parses XML-style tool calls from a stream of text.
- * Format: <tool_name>JSON_ARGS</tool_name>
+ * Parses tool calls from a stream of text.
+ * Handles both XML-style tags and JSON code blocks.
  */
 export class XmlToolParser {
   private buffer = '';
-  private readonly toolCallRegex = /<([a-zA-Z0-9_]+)>([\s\S]*?)<\/\1>/g;
+
+  // Format: <tool_name>JSON_ARGS</tool_name>
+  private readonly xmlTagRegex = /<([a-zA-Z0-9_]+)>([\s\S]*?)<\/\1>/g;
+
+  // Format: ```json { "name": "...", "arguments": { ... } } ```
+  private readonly jsonBlockRegex = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/g;
 
   /**
    * Adds new text to the parser and returns any complete tool calls found.
@@ -21,40 +26,58 @@ export class XmlToolParser {
   parse(text: string): FunctionCall[] {
     this.buffer += text;
     const calls: FunctionCall[] = [];
-    let match: RegExpExecArray | null;
 
-    // Reset regex lastIndex to search from start of buffer
-    this.toolCallRegex.lastIndex = 0;
-
-    while ((match = this.toolCallRegex.exec(this.buffer)) !== null) {
-      const name = match[1];
-      const argsStr = match[2].trim();
+    // 1. Check for XML Tags
+    this.xmlTagRegex.lastIndex = 0;
+    let xmlMatch: RegExpExecArray | null;
+    while ((xmlMatch = this.xmlTagRegex.exec(this.buffer)) !== null) {
+      const name = xmlMatch[1];
+      const argsStr = xmlMatch[2].trim();
       let args: Record<string, unknown> = {};
 
       try {
         if (argsStr) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-type-assertion
           args = JSON.parse(argsStr) as Record<string, unknown>;
         }
-        calls.push({
-          name,
-          args,
-        });
+        calls.push({ name, args });
       } catch (e) {
-        // If JSON parsing fails, it might be partial or invalid.
-        // For now, we skip it but we might want to log it.
         debugLogger.log(
-          `[XmlToolParser] Failed to parse args for tool ${name}:`,
+          `[XmlToolParser] Failed to parse XML args for tool ${name}:`,
           e,
         );
       }
     }
 
-    // We don't clear the buffer yet because we might have partial tags.
-    // However, if we found matches, we should ideally remove the matched parts
-    // to avoid double-parsing.
-    // But since we use the 'g' flag and process all matches, it's safer to
-    // track what we've already emitted or just clear the buffer when a turn ends.
+    // 2. Check for JSON Code Blocks
+    this.jsonBlockRegex.lastIndex = 0;
+    let jsonMatch: RegExpExecArray | null;
+    while ((jsonMatch = this.jsonBlockRegex.exec(this.buffer)) !== null) {
+      const jsonStr = jsonMatch[1].trim();
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const obj = JSON.parse(jsonStr);
+
+        // Match standard formats
+        if (obj && typeof obj === 'object') {
+          // Supports { name, arguments }, { toolName, parameters }, { tool, args }
+          // and also { type: "mcp_call", name, arguments }
+          const name = obj.name || obj.toolName || obj.tool;
+          const args = obj.arguments || obj.parameters || obj.args || {};
+
+          if (typeof name === 'string' && name.length > 0) {
+            calls.push({
+              name,
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+              args: typeof args === 'object' ? args : {},
+            });
+          }
+        }
+      } catch (e) {
+        // Might be partial JSON during streaming
+        debugLogger.log(`[XmlToolParser] Failed to parse JSON block:`, e);
+      }
+    }
 
     return calls;
   }

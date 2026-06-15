@@ -5,7 +5,6 @@
  */
 
 import { AuthType, loadApiKey } from '@google/gemini-cli-core';
-import { loadEnvironment, loadSettings } from './settings.js';
 
 export async function validateAuthMethod(
   authMethod: AuthType,
@@ -17,17 +16,22 @@ export async function validateAuthMethodWithSettings(
   authMethod: AuthType,
   settings: any,
 ): Promise<string | null> {
+  const methodStr = String(authMethod);
   // Simple passthrough for common methods
   if (
     authMethod === AuthType.LOGIN_WITH_GOOGLE ||
+    methodStr === 'oauth-personal' ||
     authMethod === AuthType.COMPUTE_ADC ||
+    methodStr === 'compute-default-credentials' ||
     authMethod === AuthType.GATEWAY ||
-    authMethod === AuthType.OLLAMA
+    methodStr === 'gateway' ||
+    authMethod === AuthType.OLLAMA ||
+    methodStr === 'ollama'
   ) {
     return null;
   }
 
-  if (authMethod === AuthType.USE_GEMINI) {
+  if (authMethod === AuthType.USE_GEMINI || methodStr === 'gemini-api-key') {
     const apiKey = await loadApiKey();
     if (!apiKey && !process.env['GEMINI_API_KEY']) {
       return (
@@ -38,7 +42,7 @@ export async function validateAuthMethodWithSettings(
     return null;
   }
 
-  if (authMethod === AuthType.USE_VERTEX_AI) {
+  if (authMethod === AuthType.USE_VERTEX_AI || methodStr === 'vertex-ai') {
     const hasVertexProjectLocationConfig =
       !!process.env['GOOGLE_CLOUD_PROJECT'] &&
       !!process.env['GOOGLE_CLOUD_LOCATION'];
@@ -54,14 +58,14 @@ export async function validateAuthMethodWithSettings(
     return null;
   }
 
-  if (authMethod === AuthType.OPENAI) {
+  if (authMethod === AuthType.OPENAI || methodStr === 'openai') {
     if (!process.env['OPENAI_API_KEY']) {
       return 'When using OpenAI, you must specify the OPENAI_API_KEY environment variable.';
     }
     return null;
   }
 
-  if (authMethod === AuthType.BEDROCK) {
+  if (authMethod === AuthType.BEDROCK || methodStr === 'bedrock') {
     // Bedrock typically uses AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, etc.
     // or AWS_PROFILE, or IRSA (AWS_ROLE_ARN).
     // In some environments (like EC2/EKS), credentials might be provided
