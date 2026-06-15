@@ -143,9 +143,8 @@ export async function run() {
     // --- Heavy Child Process ---
     // Now we can safely import everything.
     const { main } = await import('./src/gemini.js');
-    const { FatalError, writeToStderr } = await import(
-      '@google/gemini-cli-core'
-    );
+    const { FatalError, writeToStderr } =
+      await import('@google/gemini-cli-core');
     const { runExitCleanup } = await import('./src/utils/cleanup.js');
 
     main().catch(async (error: unknown) => {
@@ -187,7 +186,11 @@ export async function run() {
 
 // Only run if this is the main module
 import { fileURLToPath } from 'node:url';
-const isMain = process.argv[1] && (fileURLToPath(import.meta.url) === process.argv[1]);
+import { realpathSync } from 'node:fs';
+const isMain =
+  process.argv[1] &&
+  realpathSync(fileURLToPath(import.meta.url)) ===
+    realpathSync(process.argv[1]);
 
 if (isMain || process.env.GEMINI_CLI_RUN_AS_MAIN === 'true') {
   run();

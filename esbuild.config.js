@@ -97,6 +97,7 @@ const external = [
   'chokidar',
   '@opentelemetry/instrumentation-http',
   'json-stable-stringify',
+  '@google/genai',
 ];
 
 const baseConfig = {
