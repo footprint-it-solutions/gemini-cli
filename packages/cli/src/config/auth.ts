@@ -16,7 +16,7 @@ export async function validateAuthMethodWithSettings(
   authMethod: AuthType,
   settings: any,
 ): Promise<string | null> {
-  const methodStr = String(authMethod);
+  const methodStr = String(authMethod).toLowerCase();
   // Simple passthrough for common methods
   if (
     authMethod === AuthType.LOGIN_WITH_GOOGLE ||
@@ -83,5 +83,7 @@ export async function validateAuthMethodWithSettings(
     return null;
   }
 
-  return 'Invalid auth method selected.';
+  return `Invalid auth method selected: "${methodStr}". Expected one of: ${Object.values(
+    AuthType,
+  ).join(', ')}`;
 }
