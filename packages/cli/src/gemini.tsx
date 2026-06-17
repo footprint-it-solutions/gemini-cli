@@ -484,14 +484,12 @@ export async function main() {
     !settings.merged.security.auth.selectedType ||
     settings.merged.security.auth.selectedType === AuthType.LEGACY_CLOUD_SHELL
   ) {
-    if (
-      process.env['CLOUD_SHELL'] === 'true' ||
-      process.env['GEMINI_CLI_USE_COMPUTE_ADC'] === 'true'
-    ) {
+    const envAuthType = getAuthTypeFromEnv();
+    if (envAuthType) {
       settings.setValue(
         SettingScope.User,
         'security.auth.selectedType',
-        AuthType.COMPUTE_ADC,
+        envAuthType,
       );
     }
   }

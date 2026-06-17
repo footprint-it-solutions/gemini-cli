@@ -62,7 +62,7 @@ export const OLLAMA_LLAMA3_1 = 'llama3.1';
 /**
  * Model configuration registry.
  */
-export const MODEL_CONFIGS: Record<string, { modelId: string; provider: string }> = {
+export const DEFAULT_MODEL_CONFIGS: Record<string, { modelId: string; provider: string }> = {
   // Google Gemini
   'gemini-1.5-pro': { modelId: 'gemini-1.5-pro', provider: 'google' },
   'gemini-1.5-flash': { modelId: 'gemini-1.5-flash', provider: 'google' },
