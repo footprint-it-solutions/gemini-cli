@@ -670,10 +670,14 @@ You MUST strictly adhere to the JSON schema defined for each tool.
                 finishReason: this.mapFinishReason(chunk.messageStop.stopReason) 
             }],
             functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
+         } as any as GenerateContentResponse;
+      }
+      if (chunk.metadata) {
+         yield {
             usageMetadata: {
-                promptTokenCount: chunk.metadata?.usage?.inputTokens || 0,
-                candidatesTokenCount: chunk.metadata?.usage?.outputTokens || 0,
-                totalTokenCount: (chunk.metadata?.usage?.inputTokens || 0) + (chunk.metadata?.usage?.outputTokens || 0)
+                promptTokenCount: chunk.metadata.usage?.inputTokens || 0,
+                candidatesTokenCount: chunk.metadata.usage?.outputTokens || 0,
+                totalTokenCount: (chunk.metadata.usage?.inputTokens || 0) + (chunk.metadata.usage?.outputTokens || 0)
             }
          } as any as GenerateContentResponse;
       }

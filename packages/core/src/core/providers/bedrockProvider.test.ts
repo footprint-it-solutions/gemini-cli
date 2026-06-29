@@ -208,4 +208,42 @@ describe('BedrockContentGenerator', () => {
       new_string: '',
     });
   });
+
+  it('should generate content stream and handle metadata correctly', async () => {
+    const mockStream = (async function* () {
+      yield { contentBlockDelta: { delta: { text: 'Hello' } } };
+      yield { messageStop: { stopReason: 'end_turn' } };
+      yield {
+        metadata: {
+          usage: {
+            inputTokens: 10,
+            outputTokens: 5,
+            totalTokens: 15,
+          },
+        },
+      };
+    })();
+
+    mockClient.send.mockResolvedValue({ stream: mockStream });
+
+    const request: any = {
+      model: 'us.amazon.nova-2-lite-v1:0',
+      contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
+    };
+
+    const stream = await generator.generateContentStream(request, 'prompt-id', LlmRole.MAIN);
+    const results: any[] = [];
+    for await (const chunk of stream) {
+      results.push(chunk);
+    }
+
+    expect(results).toHaveLength(3);
+    expect(results[0].candidates?.[0].content?.parts?.[0].text).toBe('Hello');
+    expect(results[1].candidates?.[0].finishReason).toBe('STOP');
+    expect(results[2].usageMetadata).toEqual({
+      promptTokenCount: 10,
+      candidatesTokenCount: 5,
+      totalTokenCount: 15,
+    });
+  });
 });
