@@ -27,7 +27,7 @@ description = "Builds and bundles the application"
 run = "npm run build:all && npm run bundle"
 
 [tasks.install]
-description = "Builds and bundles the application"
+description = "Builds, bundles, packs and installs the application"
 run = "npm run build:all && npm run bundle && npm pack && npm install -g ./footprint-it-solutions-gemini-cli-0.45.3.tgz"
 
 [hooks]
