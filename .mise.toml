@@ -23,7 +23,11 @@ run = "bash {{config_root}}/check-aws-sso.sh $AWS_PROFILE $AWS_SSO_PROFILE"
 
 [tasks.build]
 description = "Builds and bundles the application"
-run = "npm run build && npm run bundle"
+run = "npm run build:all && npm run bundle"
+
+[tasks.install]
+description = "Builds and bundles the application"
+run = "npm run build:all && npm run bundle && npm pack && npm install -g ./footprint-it-solutions-gemini-cli-0.45.3.tgz"
 
 [hooks]
 # This runs when you enter the directory or open it in VS Code
