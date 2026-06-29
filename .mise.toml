@@ -1,0 +1,30 @@
+[env]
+AWS_CONFIG_FILE = "{{config_root}}/.aws/config"
+AWS_REGION = "eu-west-1"
+AWS_PROFILE = "Aerith-Development"
+AWS_SSO_PROFILE = "Footprint"
+# GEMINI_API_KEY = "foo"
+GEMINI_CLI_HOME = ".gemini-isolated"
+GEMINI_DEBUG_LOG_FILE = "bedrock-debug.log"
+
+[settings]
+env_shell_expand = true
+experimental = true
+
+[tools]
+ansible = "13.7.0"
+argocd = "latest"
+awscli = "latest"
+pnpm = "latest"
+
+[tasks.aws-login]
+description = "Logs into AWS using SSO. This is required to run any AWS CLI commands or use any tools that rely on AWS credentials."
+run = "bash {{config_root}}/check-aws-sso.sh $AWS_PROFILE $AWS_SSO_PROFILE"
+
+[tasks.build]
+description = "Builds and bundles the application"
+run = "npm run build && npm run bundle"
+
+[hooks]
+# This runs when you enter the directory or open it in VS Code
+enter = { task = "aws-login" }
