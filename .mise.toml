@@ -15,6 +15,7 @@ experimental = true
 ansible = "13.7.0"
 argocd = "latest"
 awscli = "latest"
+node = "lts"
 pnpm = "latest"
 
 [tasks.aws-login]
