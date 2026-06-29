@@ -298,7 +298,7 @@ export class ActivityLogger extends EventEmitter {
           : input instanceof URL
             ? input.toString()
             : input.url;
-      if (url.includes('127.0.0.1') || url.includes('localhost'))
+      if (url.includes('127.0.0.1') || url.includes('localhost') || url.includes('amazonaws.com') || url.includes('awsapps.com'))
         return originalFetch(input, init);
 
       const id = Math.random().toString(36).substring(7);
@@ -477,7 +477,7 @@ export class ActivityLogger extends EventEmitter {
           `${protocol}//${options.hostname || options.host || 'localhost'}${options.path || '/'}`;
       }
 
-      if (url.includes('127.0.0.1') || url.includes('localhost')) {
+      if (url.includes('127.0.0.1') || url.includes('localhost') || url.includes('amazonaws.com') || url.includes('awsapps.com')) {
         return callHttpRequest(originalFn, args);
       }
 

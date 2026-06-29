@@ -81,5 +81,19 @@ export function parseAndFormatApiError(
     return `[API Error: ${error}]`;
   }
 
-  return '[API Error: An unknown error occurred.]';
+  // Handle generic Error objects or objects with a message property
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = String((error as any).message);
+    const isSsoError =
+      message.includes('SSO returns an invalid temporary credential') ||
+      message.includes('Token is expired') ||
+      message.includes('resolveSSOCredentials');
+
+    if (isSsoError) {
+      return `[API Error: AWS SSO session expired or invalid (${message}). Please run 'aws sso login --profile ${process.env['AWS_PROFILE'] || 'your-profile'}']`;
+    }
+    return `[API Error: ${message}]`;
+  }
+
+  return `[API Error: An unknown error occurred. (${typeof error})]`;
 }

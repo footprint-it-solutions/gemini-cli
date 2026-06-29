@@ -99,6 +99,7 @@ export interface CliArgs {
   listSessions: boolean | undefined;
   deleteSession: string | undefined;
   includeDirectories: string[] | undefined;
+  awsProfile?: string | undefined;
   screenReader: boolean | undefined;
   useWriteTodos: boolean | undefined;
   outputFormat: string | undefined;
@@ -458,6 +459,11 @@ export async function parseArguments(
           description:
             'Additional directories to include in the workspace (comma-separated or multiple --include-directories)',
           coerce: coerceCommaSeparated,
+        })
+        .option('aws-profile', {
+          type: 'string',
+          nargs: 1,
+          description: 'AWS profile to use for Bedrock authentication.',
         })
         .option('screen-reader', {
           type: 'boolean',
@@ -947,7 +953,7 @@ export async function loadCliConfig(
     enabled: !!profileSelector,
   };
 
-  return new Config({
+  const config = new Config({
     acpMode: isAcpMode,
     clientName,
     sessionId,
@@ -1020,6 +1026,7 @@ export async function loadCliConfig(
     fileDiscoveryService: fileService,
     bugCommand: settings.advanced?.bugCommand,
     model: resolvedModel,
+    awsProfile: argv.awsProfile || process.env['AWS_PROFILE'] || settings.security?.auth?.awsProfile,
     maxSessionTurns: settings.model?.maxSessionTurns,
 
     listExtensions: argv.listExtensions || false,
@@ -1109,6 +1116,21 @@ export async function loadCliConfig(
     },
     enableConseca: settings.security?.enableConseca,
   });
+
+  if (debugMode) {
+    debugLogger.log(
+      `[Config] Resolved awsProfile: ${config.getAwsProfile() || 'undefined'} (Source: argv=${argv.awsProfile}, env=${process.env['AWS_PROFILE']}, settings=${settings.security?.auth?.awsProfile})`,
+    );
+    const awsEnv = Object.keys(process.env)
+      .filter((key) => key.startsWith('AWS_') || key.startsWith('BEDROCK_'))
+      .reduce((obj, key) => {
+        obj[key] = process.env[key];
+        return obj;
+      }, {} as any);
+    debugLogger.log(`[Config] AWS/Bedrock Env: ${JSON.stringify(awsEnv, null, 2)}`);
+  }
+
+  return config;
 }
 
 function mergeExcludeTools(

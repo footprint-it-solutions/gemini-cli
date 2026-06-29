@@ -93,7 +93,8 @@ export const useAuthCommand = (
       }
 
       const authType =
-        getAuthTypeFromEnv() || settings.merged.security.auth.selectedType;
+        getAuthTypeFromEnv(config.getModel()) ||
+        settings.merged.security.auth.selectedType;
 
       if (!authType) {
         if (process.env['GEMINI_API_KEY']) {

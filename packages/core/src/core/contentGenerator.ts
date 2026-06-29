@@ -84,8 +84,8 @@ export enum AuthType {
  * 5. AWS credentials -> BEDROCK
  * 6. GEMINI_API_KEY -> USE_GEMINI
  */
-export function getAuthTypeFromEnv(): AuthType | undefined {
-  const model = process.env['GEMINI_MODEL'];
+export function getAuthTypeFromEnv(modelName?: string): AuthType | undefined {
+  const model = modelName || process.env['GEMINI_MODEL'];
   if (model?.startsWith('bedrock/')) {
     return AuthType.BEDROCK;
   }
@@ -112,8 +112,9 @@ export function getAuthTypeFromEnv(): AuthType | undefined {
     process.env['AWS_PROFILE'] ||
     process.env['AWS_ROLE_ARN'] ||
     process.env['AWS_WEB_IDENTITY_TOKEN_FILE'] ||
-    process.env['BEDROCK_REGION'] ||
-    process.env['AWS_REGION']
+    process.env['AWS_BEDROCK_REGION'] ||
+    process.env['AWS_REGION'] ||
+    process.env['AWS_DEFAULT_REGION']
   ) {
     return AuthType.BEDROCK;
   }
@@ -140,6 +141,7 @@ export type ContentGeneratorConfig = {
   baseUrl?: string;
   customHeaders?: Record<string, string>;
   vertexAiRouting?: VertexAiRoutingConfig;
+  awsProfile?: string;
 };
 
 export type VertexAiRequestType = 'dedicated' | 'shared';
@@ -176,6 +178,7 @@ export async function createContentGeneratorConfig(
     baseUrl,
     customHeaders,
     vertexAiRouting,
+    awsProfile: config.getAwsProfile?.() || process.env['AWS_PROFILE'],
   };
 
   // If we are using Google auth or we are in Cloud Shell, there is nothing else to validate for now.
@@ -354,9 +357,11 @@ export async function createContentGenerator(
     }
 
     if (config.authType === AuthType.BEDROCK) {
+      const resolvedRegion = process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
       return new LoggingContentGenerator(
         new BedrockContentGenerator(
-          process.env['BEDROCK_REGION'] || process.env['AWS_REGION'],
+          resolvedRegion,
+          config.awsProfile,
         ),
         gcConfig,
       );

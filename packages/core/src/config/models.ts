@@ -77,6 +77,16 @@ export const VALID_GEMINI_MODELS = new Set([
 
   GEMMA_4_31B_IT_MODEL,
   GEMMA_4_26B_A4B_IT_MODEL,
+
+  'nova-pro',
+  'nova-lite',
+  'nova-micro',
+  'bedrock/nova-pro',
+  'bedrock/nova-lite',
+  'bedrock/nova-micro',
+  'bedrock/eu.amazon.nova-2-pro-v1:0',
+  'bedrock/eu.amazon.nova-2-lite-v1:0',
+  'bedrock/eu.amazon.nova-2-micro-v1:0',
 ]);
 
 /** @deprecated Use GEMINI_MODEL_ALIAS_AUTO instead. */
@@ -187,6 +197,21 @@ export function resolveModel(
       resolved = useGemini3_1FlashLite
         ? PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL
         : DEFAULT_GEMINI_FLASH_LITE_MODEL;
+      break;
+    }
+    case 'nova-pro':
+    case 'bedrock/nova-pro': {
+      resolved = 'bedrock/eu.amazon.nova-2-pro-v1:0';
+      break;
+    }
+    case 'nova-lite':
+    case 'bedrock/nova-lite': {
+      resolved = 'bedrock/eu.amazon.nova-2-lite-v1:0';
+      break;
+    }
+    case 'nova-micro':
+    case 'bedrock/nova-micro': {
+      resolved = 'bedrock/eu.amazon.nova-2-micro-v1:0';
       break;
     }
     default: {

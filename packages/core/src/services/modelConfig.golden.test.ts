@@ -29,7 +29,7 @@ const RETRY_GOLDEN_FILE_PATH = path.resolve(
 describe('ModelConfigService Golden Test', () => {
   it('should match the golden file for resolved default aliases', async () => {
     const service = new ModelConfigService(DEFAULT_MODEL_CONFIGS);
-    const aliases = Object.keys(DEFAULT_MODEL_CONFIGS.aliases ?? {});
+    const aliases = Object.keys(DEFAULT_MODEL_CONFIGS['aliases'] ?? {});
 
     const resolvedAliases: Record<string, unknown> = {};
     for (const alias of aliases) {
@@ -71,7 +71,7 @@ describe('ModelConfigService Golden Test', () => {
 
   it('should match the golden file for resolved default aliases with isRetry=true', async () => {
     const service = new ModelConfigService(DEFAULT_MODEL_CONFIGS);
-    const aliases = Object.keys(DEFAULT_MODEL_CONFIGS.aliases ?? {});
+    const aliases = Object.keys(DEFAULT_MODEL_CONFIGS['aliases'] ?? {});
 
     const resolvedAliases: Record<string, unknown> = {};
     for (const alias of aliases) {

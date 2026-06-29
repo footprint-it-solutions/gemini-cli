@@ -6,7 +6,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import ignore from 'ignore';
+import ignore_pkg from 'ignore';
+const ignore = (ignore_pkg as any).default || ignore_pkg;
 import { debugLogger } from './debugLogger.js';
 import { getNormalizedRelativePath } from './ignorePathUtils.js';
 

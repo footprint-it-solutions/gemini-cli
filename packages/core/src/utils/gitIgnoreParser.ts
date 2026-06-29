@@ -6,7 +6,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import ignore, { type Ignore } from 'ignore';
+import ignore_pkg, { type Ignore } from 'ignore';
+const ignore = (ignore_pkg as any).default || ignore_pkg;
 import { getNormalizedRelativePath } from './ignorePathUtils.js';
 
 export interface GitIgnoreFilter {
@@ -179,10 +180,11 @@ export class GitIgnoreParser implements GitIgnoreFilter {
         let patterns = this.cache.get(dir);
         if (patterns === undefined) {
           const gitignorePath = path.join(dir, '.gitignore');
-          patterns = fs.existsSync(gitignorePath)
+          const newPatterns = fs.existsSync(gitignorePath)
             ? this.loadPatternsForFile(gitignorePath)
             : ignore();
-          this.cache.set(dir, patterns);
+          this.cache.set(dir, newPatterns);
+          patterns = newPatterns;
         }
         ig.add(patterns);
       }

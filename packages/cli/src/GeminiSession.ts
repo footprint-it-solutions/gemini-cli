@@ -40,8 +40,8 @@ export class GeminiSession extends EventEmitter {
       targetDir: cwd,
       cwd,
       debugMode: options.logLevel === 'debug',
-      model: options.model || process.env.GEMINI_MODEL,
-      outputFormat: OutputFormat.STREAM_JSON,
+      model: options.model || process.env['GEMINI_MODEL'] || '',
+      output: { format: OutputFormat.STREAM_JSON },
     });
 
     this.scheduler = new Scheduler({
@@ -60,7 +60,8 @@ export class GeminiSession extends EventEmitter {
   }
 
   async execute(prompt: string): Promise<void> {
-    const authType = getAuthTypeFromEnv() || AuthType.BEDROCK;
+    const authType =
+      getAuthTypeFromEnv(this.config.getActiveModel()) || AuthType.BEDROCK;
     await this.config.refreshAuth(authType);
     await this.config.initialize();
 

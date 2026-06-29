@@ -21,6 +21,7 @@ import {
   coreEvents,
   CoreEvent,
   getOauthClient,
+  getAuthTypeFromEnv,
   patchStdio,
   writeToStdout,
   writeToStderr,
@@ -479,12 +480,17 @@ export async function main() {
     validateDnsResolutionOrder(settings.merged.advanced.dnsResolutionOrder),
   );
 
-  // Set a default auth type if one isn't set or is set to a legacy type
+  // Determine the effective auth type based on environment, flags, and settings
+  const envAuthType = getAuthTypeFromEnv(argv.model);
+  const selectedAuthType = settings.merged.security.auth.selectedType;
+
+  // Set a default auth type if one isn't set or is set to a legacy type,
+  // or if the environment/flag implies a different provider.
   if (
-    !settings.merged.security.auth.selectedType ||
-    settings.merged.security.auth.selectedType === AuthType.LEGACY_CLOUD_SHELL
+    !selectedAuthType ||
+    selectedAuthType === AuthType.LEGACY_CLOUD_SHELL ||
+    (envAuthType && envAuthType !== selectedAuthType)
   ) {
-    const envAuthType = getAuthTypeFromEnv();
     if (envAuthType) {
       settings.setValue(
         SettingScope.User,

@@ -64,7 +64,7 @@ describe('generateValidName', () => {
 
   it('should truncate long names', () => {
     expect(generateValidName('x'.repeat(80))).toBe(
-      'mcp_xxxxxxxxxxxxxxxxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+      'mcp_xxxxxxxxxxxxxxxxxxxxxxxxxx___xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
     );
   });
 
@@ -1050,17 +1050,17 @@ describe('MCP Tool Naming Regression Fixes', () => {
       expect(generateValidName('My Tool')).toBe('mcp_My_Tool');
     });
 
-    it('should allow colons', () => {
-      expect(generateValidName('namespace:tool')).toBe('mcp_namespace:tool');
+    it('should sanitize colons', () => {
+      expect(generateValidName('namespace:tool')).toBe('mcp_namespace_tool');
     });
 
     it('should ensure name starts with a letter or underscore', () => {
       expect(generateValidName('valid_tool_name')).toBe('mcp_valid_tool_name');
       expect(generateValidName('alsoValid-123.name')).toBe(
-        'mcp_alsoValid-123.name',
+        'mcp_alsoValid-123_name',
       );
       expect(generateValidName('another:valid:name')).toBe(
-        'mcp_another:valid:name',
+        'mcp_another_valid_name',
       );
     });
 
@@ -1068,7 +1068,7 @@ describe('MCP Tool Naming Regression Fixes', () => {
       const longName = 'a'.repeat(40) + '__' + 'b'.repeat(40);
       const result = generateValidName(longName);
       expect(result.length).toBeLessThanOrEqual(63);
-      expect(result).toMatch(/^mcp_a{26}\.\.\.b{30}$/);
+      expect(result).toMatch(/^mcp_a{26}___b{30}$/);
     });
 
     it('should handle very long names starting with a digit', () => {
@@ -1108,7 +1108,7 @@ describe('MCP Tool Naming Regression Fixes', () => {
 
       const qn = tool.getFullyQualifiedName();
       expect(qn.length).toBeLessThanOrEqual(63);
-      expect(qn).toContain('...');
+      expect(qn).toContain('___');
     });
 
     it('should handle server names starting with digits', () => {

@@ -192,6 +192,6 @@ const isMain =
   realpathSync(fileURLToPath(import.meta.url)) ===
     realpathSync(process.argv[1]);
 
-if (isMain || process.env.GEMINI_CLI_RUN_AS_MAIN === 'true') {
+if (isMain || process.env['GEMINI_CLI_RUN_AS_MAIN'] === 'true') {
   run();
 }

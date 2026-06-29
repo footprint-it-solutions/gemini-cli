@@ -69,17 +69,8 @@ export async function validateAuthMethodWithSettings(
     // Bedrock typically uses AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, etc.
     // or AWS_PROFILE, or IRSA (AWS_ROLE_ARN).
     // In some environments (like EC2/EKS), credentials might be provided
-    // automatically by the environment if a region is specified.
-    if (
-      !process.env['AWS_ACCESS_KEY_ID'] &&
-      !process.env['AWS_PROFILE'] &&
-      !process.env['AWS_ROLE_ARN'] &&
-      !process.env['AWS_WEB_IDENTITY_TOKEN_FILE'] &&
-      !process.env['BEDROCK_REGION'] &&
-      !process.env['AWS_REGION']
-    ) {
-      return 'When using Bedrock, you must specify AWS credentials (e.g., AWS_ACCESS_KEY_ID, AWS_PROFILE, or AWS_ROLE_ARN) or an AWS region (AWS_REGION or BEDROCK_REGION).';
-    }
+    // automatically by the environment. We allow validation to pass to let
+    // the AWS SDK attempt its full resolution chain.
     return null;
   }
 

@@ -21,50 +21,57 @@ export function AuthDialog({
   onCancel,
   initialAuthType,
 }: AuthDialogProps) {
-  const [selectedType, setSelectedType] = useState<AuthType>(
+  const [selectedType] = useState<AuthType>(
     initialAuthType || AuthType.LOGIN_WITH_GOOGLE,
   );
   const [error, setError] = useState<string | null>(null);
 
   const authOptions = [
     {
+      key: 'google',
       label: 'Log in with Google (OAuth)',
       value: AuthType.LOGIN_WITH_GOOGLE,
     },
     {
+      key: 'gemini',
       label: 'Gemini API Key',
       value: AuthType.USE_GEMINI,
     },
     {
+      key: 'vertex',
       label: 'Vertex AI (GCP)',
       value: AuthType.USE_VERTEX_AI,
     },
     {
+      key: 'openai',
       label: 'OpenAI API',
       value: AuthType.OPENAI,
     },
     {
+      key: 'bedrock',
       label: 'Amazon Bedrock',
       value: AuthType.BEDROCK,
     },
     {
+      key: 'ollama',
       label: 'Ollama (Local)',
       value: AuthType.OLLAMA,
     },
     {
+      key: 'gateway',
       label: 'AI API Gateway',
       value: AuthType.GATEWAY,
     },
   ];
 
   const handleSelect = useCallback(
-    async (item: { value: AuthType }) => {
-      const validationError = await validateAuthMethod(item.value);
+    async (authType: AuthType) => {
+      const validationError = await validateAuthMethod(authType);
       if (validationError) {
         setError(validationError);
         return;
       }
-      onAuthSelected(item.value);
+      onAuthSelected(authType);
     },
     [onAuthSelected],
   );

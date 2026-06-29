@@ -7,8 +7,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BedrockContentGenerator } from './bedrockProvider.js';
 import type { GenerateContentResponse } from '@google/genai';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 
-// Mock the AWS SDK
+// Mock the AWS SDK and credential providers
 vi.mock('@aws-sdk/client-bedrock-runtime', () => {
   return {
     BedrockRuntimeClient: vi.fn().mockImplementation(() => ({
@@ -19,22 +20,34 @@ vi.mock('@aws-sdk/client-bedrock-runtime', () => {
   };
 });
 
+vi.mock('@aws-sdk/credential-providers', () => ({
+  fromNodeProviderChain: vi.fn(),
+}));
+
 describe('BedrockContentGenerator (Nova Support)', () => {
   let generator: BedrockContentGenerator;
   let mockClient: { send: any };
 
   beforeEach(() => {
-    generator = new BedrockContentGenerator({
-      modelId: 'us.amazon.nova-lite-v1:0',
-      region: 'us-east-1',
-    });
+    generator = new BedrockContentGenerator('us-east-1');
     mockClient = (generator as unknown as { client: { send: any } }).client;
+  });
+
+  describe('initialization', () => {
+    it('should use the provided region and profile', () => {
+      new BedrockContentGenerator('us-west-2', 'my-profile');
+      expect(fromNodeProviderChain).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: 'my-profile',
+        })
+      );
+    });
   });
 
   describe('mapContentsToMessages', () => {
     it('should map user message correctly', () => {
       const contents = [{ role: 'user', parts: [{ text: 'Hello' }] }];
-      const messages = (generator as unknown as { mapContentsToMessages: (c: any) => any }).mapContentsToMessages(contents);
+      const messages = (generator as unknown as { mapContentsToMessages: (c: any, t: boolean) => any }).mapContentsToMessages(contents, true);
       expect(messages).toEqual([
         { role: 'user', content: [{ text: 'Hello' }] },
       ]);
@@ -69,7 +82,7 @@ describe('BedrockContentGenerator (Nova Support)', () => {
         },
       ];
 
-      const messages = (generator as unknown as { mapContentsToMessages: (c: any) => any }).mapContentsToMessages(contents);
+      const messages = (generator as unknown as { mapContentsToMessages: (c: any, t: boolean) => any }).mapContentsToMessages(contents, true);
 
       expect(messages).toHaveLength(3);
       // Assistant turn with tool use
@@ -125,9 +138,9 @@ describe('BedrockContentGenerator (Nova Support)', () => {
           },
         ],
         usageMetadata: {
-          candidatesTokenCount: undefined,
-          promptTokenCount: undefined,
-          totalTokenCount: undefined,
+          candidatesTokenCount: 0,
+          promptTokenCount: 0,
+          totalTokenCount: 0,
         },
       });
     });
@@ -152,7 +165,7 @@ describe('BedrockContentGenerator (Nova Support)', () => {
       };
 
       const response = (generator as unknown as { mapResponse: (r: any) => any }).mapResponse(bedrockResponse);
-      expect(response.candidates[0].content.parts[0]).toEqual({
+      expect((response.candidates as any)[0].content.parts[0]).toEqual({
         functionCall: {
           name: 'get_weather',
           args: { location: 'Paris' },
@@ -189,14 +202,14 @@ describe('BedrockContentGenerator (Nova Support)', () => {
 
       // We expect 2 chunks: one with the function call, one with the finish reason
       expect(chunks).toHaveLength(2);
-      expect(chunks[0].candidates[0].content.parts[0]).toEqual({
+      expect((chunks[0].candidates as any)[0].content.parts[0]).toEqual({
         functionCall: {
           name: 'search',
           args: { query: 'foo' },
           id: 'tool_456',
         },
       });
-      expect(chunks[1].candidates[0].finishReason).toBe('STOP');
+      expect((chunks[1].candidates as any)[0].finishReason).toBe('STOP');
     });
   });
 });
