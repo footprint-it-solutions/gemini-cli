@@ -12,6 +12,7 @@ import { ConsentPrompt } from './ConsentPrompt.js';
 import { ThemeDialog } from './ThemeDialog.js';
 import { SettingsDialog } from './SettingsDialog.js';
 import { AuthInProgress } from '../auth/AuthInProgress.js';
+import { SettingScope } from '../../config/settings.js';
 import { AuthDialog } from '../auth/AuthDialog.js';
 import { BannedAccountDialog } from '../auth/BannedAccountDialog.js';
 import { ApiAuthDialog } from '../auth/ApiAuthDialog.js';
@@ -322,12 +323,11 @@ export const DialogManager = ({
     return (
       <Box flexDirection="column">
         <AuthDialog
-          config={config}
-          settings={settings}
-          setAuthState={uiActions.setAuthState}
-          authError={uiState.authError}
-          onAuthError={uiActions.onAuthError}
-          setAuthContext={uiActions.setAuthContext}
+          onAuthSelected={(authType) =>
+            uiActions.handleAuthSelect(authType, SettingScope.User)
+          }
+          onCancel={() => uiActions.onAuthError(null)}
+          initialAuthType={config?.getContentGeneratorConfig().authType}
         />
       </Box>
     );

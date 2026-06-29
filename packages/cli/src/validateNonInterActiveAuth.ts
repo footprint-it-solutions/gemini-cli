@@ -24,7 +24,9 @@ export async function validateNonInteractiveAuth(
   settings: LoadedSettings,
 ) {
   try {
-    const effectiveAuthType = configuredAuthType || getAuthTypeFromEnv();
+    const effectiveAuthType =
+      getAuthTypeFromEnv(nonInteractiveConfig.getActiveModel()) ||
+      configuredAuthType;
 
     const enforcedType = settings.merged.security.auth.enforcedType;
     if (enforcedType && effectiveAuthType !== enforcedType) {
@@ -35,14 +37,14 @@ export async function validateNonInteractiveAuth(
     }
 
     if (!effectiveAuthType) {
-      const message = `Please set an Auth method in your ${USER_SETTINGS_PATH} or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA`;
+      const message = `Please set an Auth method in your ${USER_SETTINGS_PATH} or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA, AWS_REGION, or OPENAI_API_KEY`;
       throw new Error(message);
     }
 
     const authType: AuthType = effectiveAuthType;
 
     if (!useExternalAuth) {
-      const err = await validateAuthMethod(String(authType));
+      const err = await validateAuthMethod(authType as AuthType);
       if (err != null) {
         throw new Error(err);
       }

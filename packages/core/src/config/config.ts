@@ -694,6 +694,7 @@ export interface ConfigParameters {
   fakeResponsesNonStrict?: string;
   recordResponses?: string;
   ptyInfo?: string;
+  awsProfile?: string;
   disableYoloMode?: boolean;
   disableAlwaysAllow?: boolean;
   voiceMode?: boolean;
@@ -836,6 +837,7 @@ export class Config implements McpContext, AgentLoopContext {
 
   private _activeModel: string;
   private fallbackOverrides = new Map<string, string>();
+  private readonly awsProfile: string | undefined;
   private readonly maxSessionTurns: number;
   private readonly listSessions: boolean;
   private readonly deleteSession: string | undefined;
@@ -1149,19 +1151,19 @@ export class Config implements McpContext, AgentLoopContext {
     if (modelConfigServiceConfig) {
       // Ensure user-defined model definitions augment, not replace, the defaults.
       const mergedModelDefinitions = {
-        ...DEFAULT_MODEL_CONFIGS.modelDefinitions,
+        ...DEFAULT_MODEL_CONFIGS['modelDefinitions'],
         ...modelConfigServiceConfig.modelDefinitions,
       };
       const mergedModelIdResolutions = {
-        ...DEFAULT_MODEL_CONFIGS.modelIdResolutions,
+        ...DEFAULT_MODEL_CONFIGS['modelIdResolutions'],
         ...modelConfigServiceConfig.modelIdResolutions,
       };
       const mergedClassifierIdResolutions = {
-        ...DEFAULT_MODEL_CONFIGS.classifierIdResolutions,
+        ...DEFAULT_MODEL_CONFIGS['classifierIdResolutions'],
         ...modelConfigServiceConfig.classifierIdResolutions,
       };
       const mergedModelChains = {
-        ...DEFAULT_MODEL_CONFIGS.modelChains,
+        ...DEFAULT_MODEL_CONFIGS['modelChains'],
         ...modelConfigServiceConfig.modelChains,
       };
 
@@ -1170,9 +1172,9 @@ export class Config implements McpContext, AgentLoopContext {
         ...modelConfigServiceConfig,
         // Apply defaults for aliases and overrides if they are not provided
         aliases:
-          modelConfigServiceConfig.aliases ?? DEFAULT_MODEL_CONFIGS.aliases,
+          modelConfigServiceConfig.aliases ?? DEFAULT_MODEL_CONFIGS['aliases'],
         overrides:
-          modelConfigServiceConfig.overrides ?? DEFAULT_MODEL_CONFIGS.overrides,
+          modelConfigServiceConfig.overrides ?? DEFAULT_MODEL_CONFIGS['overrides'],
         // Use the merged model definitions
         modelDefinitions: mergedModelDefinitions,
         modelIdResolutions: mergedModelIdResolutions,
@@ -1236,6 +1238,7 @@ export class Config implements McpContext, AgentLoopContext {
     );
     ExecutionLifecycleService.setInjectionService(this.injectionService);
     this.maxSessionTurns = params.maxSessionTurns ?? -1;
+    this.awsProfile = params.awsProfile;
     this.acpMode = params.acpMode ?? false;
     this.listSessions = params.listSessions ?? false;
     this.deleteSession = params.deleteSession;
@@ -1888,6 +1891,10 @@ export class Config implements McpContext, AgentLoopContext {
 
   shouldLoadMemoryFromIncludeDirectories(): boolean {
     return this.loadMemoryFromIncludeDirectories;
+  }
+
+  getAwsProfile(): string | undefined {
+    return this.awsProfile;
   }
 
   getIncludeDirectoryTree(): boolean {

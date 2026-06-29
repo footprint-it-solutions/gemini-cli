@@ -89,14 +89,13 @@ if (existsSync(builtinSkillsSrc)) {
 const bundleMcpSrc = join(root, 'packages/core/dist/bundled');
 const bundleMcpDest = join(bundleDir, 'bundled');
 if (!existsSync(bundleMcpSrc)) {
-  console.error(
-    `Error: chrome-devtools-mcp bundle not found at ${bundleMcpSrc}.\n` +
-      `Run "npm run bundle:browser-mcp -w @google/gemini-cli-core" first.`,
+  console.warn(
+    `Warning: chrome-devtools-mcp bundle not found at ${bundleMcpSrc}. Skipping.`,
   );
-  process.exit(1);
+} else {
+  cpSync(bundleMcpSrc, bundleMcpDest, { recursive: true, dereference: true });
+  console.log('Copied bundled chrome-devtools-mcp to bundle/bundled/');
 }
-cpSync(bundleMcpSrc, bundleMcpDest, { recursive: true, dereference: true });
-console.log('Copied bundled chrome-devtools-mcp to bundle/bundled/');
 
 // 6. Copy Extension Examples
 const extensionExamplesSrc = join(

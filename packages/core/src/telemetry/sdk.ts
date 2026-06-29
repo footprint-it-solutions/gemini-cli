@@ -21,7 +21,7 @@ import { OTLPMetricExporter as OTLPMetricExporterHttp } from '@opentelemetry/exp
 import { CompressionAlgorithm } from '@opentelemetry/otlp-exporter-base';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
-import { resourceFromAttributes } from '@opentelemetry/resources';
+import { Resource } from '@opentelemetry/resources';
 import {
   BatchSpanProcessor,
   ConsoleSpanExporter,
@@ -211,7 +211,7 @@ export async function initializeTelemetry(
     return;
   }
 
-  const resource = resourceFromAttributes({
+  const resource = new Resource({
     [SemanticResourceAttributes.SERVICE_NAME]: SERVICE_NAME,
     [SemanticResourceAttributes.SERVICE_VERSION]: process.version,
     'session.id': config.getSessionId(),

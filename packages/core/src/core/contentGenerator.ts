@@ -32,6 +32,9 @@ import { getVersion, resolveModel } from '../../index.js';
 import type { LlmRole } from '../telemetry/llmRole.js';
 import { ModelMappingContentGenerator } from './modelMappingContentGenerator.js';
 import { CCPA_AI_MODEL_MAPPINGS } from '../config/models.js';
+import { OpenAIContentGenerator } from './providers/openAiProvider.js';
+import { BedrockContentGenerator } from './providers/bedrockProvider.js';
+import { OllamaContentGenerator } from './providers/ollamaProvider.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -67,6 +70,9 @@ export enum AuthType {
   LEGACY_CLOUD_SHELL = 'cloud-shell',
   COMPUTE_ADC = 'compute-default-credentials',
   GATEWAY = 'gateway',
+  OPENAI = 'openai',
+  BEDROCK = 'bedrock',
+  OLLAMA = 'ollama',
 }
 
 /**
@@ -75,14 +81,44 @@ export enum AuthType {
  * Checks in order:
  * 1. GOOGLE_GENAI_USE_GCA=true -> LOGIN_WITH_GOOGLE
  * 2. GOOGLE_GENAI_USE_VERTEXAI=true -> USE_VERTEX_AI
- * 3. GEMINI_API_KEY -> USE_GEMINI
+ * 3. OPENAI_API_KEY -> OPENAI
+ * 4. OLLAMA_BASE_URL -> OLLAMA
+ * 5. AWS credentials -> BEDROCK
+ * 6. GEMINI_API_KEY -> USE_GEMINI
  */
-export function getAuthTypeFromEnv(): AuthType | undefined {
+export function getAuthTypeFromEnv(modelName?: string): AuthType | undefined {
+  const model = modelName || process.env['GEMINI_MODEL'];
+  if (model?.startsWith('bedrock/')) {
+    return AuthType.BEDROCK;
+  }
+  if (model?.startsWith('openai/')) {
+    return AuthType.OPENAI;
+  }
+  if (model?.startsWith('ollama/')) {
+    return AuthType.OLLAMA;
+  }
   if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {
     return AuthType.LOGIN_WITH_GOOGLE;
   }
   if (process.env['GOOGLE_GENAI_USE_VERTEXAI'] === 'true') {
     return AuthType.USE_VERTEX_AI;
+  }
+  if (process.env['OPENAI_API_KEY']) {
+    return AuthType.OPENAI;
+  }
+  if (process.env['OLLAMA_BASE_URL']) {
+    return AuthType.OLLAMA;
+  }
+  if (
+    process.env['AWS_ACCESS_KEY_ID'] ||
+    process.env['AWS_PROFILE'] ||
+    process.env['AWS_ROLE_ARN'] ||
+    process.env['AWS_WEB_IDENTITY_TOKEN_FILE'] ||
+    process.env['AWS_BEDROCK_REGION'] ||
+    process.env['AWS_REGION'] ||
+    process.env['AWS_DEFAULT_REGION']
+  ) {
+    return AuthType.BEDROCK;
   }
   if (process.env['GOOGLE_GEMINI_BASE_URL']) {
     return AuthType.GATEWAY;
@@ -107,6 +143,7 @@ export type ContentGeneratorConfig = {
   baseUrl?: string;
   customHeaders?: Record<string, string>;
   vertexAiRouting?: VertexAiRoutingConfig;
+  awsProfile?: string;
 };
 
 export type VertexAiRequestType = 'dedicated' | 'shared';
@@ -143,6 +180,7 @@ export async function createContentGeneratorConfig(
     baseUrl,
     customHeaders,
     vertexAiRouting,
+    awsProfile: config.getAwsProfile?.() || process.env['AWS_PROFILE'],
   };
 
   // If we are using Google auth or we are in Cloud Shell, there is nothing else to validate for now.
@@ -171,6 +209,23 @@ export async function createContentGeneratorConfig(
     contentGeneratorConfig.apiKey = geminiApiKey;
     contentGeneratorConfig.vertexai = false;
 
+    return contentGeneratorConfig;
+  }
+
+  if (authType === AuthType.OPENAI) {
+    contentGeneratorConfig.apiKey = process.env['OPENAI_API_KEY'] || apiKey;
+    return contentGeneratorConfig;
+  }
+
+  if (authType === AuthType.BEDROCK) {
+    // Bedrock usually uses AWS credentials (env vars or profile), 
+    // so we don't necessarily need an 'apiKey' field here, 
+    // but we can pass whatever is provided.
+    return contentGeneratorConfig;
+  }
+
+  if (authType === AuthType.OLLAMA) {
+    contentGeneratorConfig.baseUrl = process.env['OLLAMA_BASE_URL'] || baseUrl;
     return contentGeneratorConfig;
   }
 
@@ -293,6 +348,31 @@ export async function createContentGenerator(
           ),
           CCPA_AI_MODEL_MAPPINGS,
         ),
+        gcConfig,
+      );
+    }
+
+    if (config.authType === AuthType.OPENAI) {
+      return new LoggingContentGenerator(
+        new OpenAIContentGenerator(config.apiKey || '', config.baseUrl),
+        gcConfig,
+      );
+    }
+
+    if (config.authType === AuthType.BEDROCK) {
+      const resolvedRegion = process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
+      return new LoggingContentGenerator(
+        new BedrockContentGenerator(
+          resolvedRegion,
+          config.awsProfile,
+        ),
+        gcConfig,
+      );
+    }
+
+    if (config.authType === AuthType.OLLAMA) {
+      return new LoggingContentGenerator(
+        new OllamaContentGenerator(config.baseUrl),
         gcConfig,
       );
     }

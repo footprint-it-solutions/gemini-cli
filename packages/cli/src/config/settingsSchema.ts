@@ -2002,6 +2002,15 @@ const SETTINGS_SCHEMA = {
             description: 'Whether to use an external authentication flow.',
             showInDialog: false,
           },
+          awsProfile: {
+            type: 'string',
+            label: 'AWS Profile',
+            category: 'Security',
+            requiresRestart: true,
+            default: undefined as string | undefined,
+            description: 'The AWS profile to use for Bedrock authentication.',
+            showInDialog: true,
+          },
         },
       },
       enableConseca: {

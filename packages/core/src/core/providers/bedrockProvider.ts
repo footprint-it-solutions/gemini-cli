@@ -1,0 +1,705 @@
+/**
+ * @license
+ * Copyright 2026 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import {
+  BedrockRuntimeClient,
+  ConverseCommand,
+  ConverseStreamCommand,
+  type Message,
+  type SystemContentBlock,
+  type Tool,
+  type ContentBlock,
+} from '@aws-sdk/client-bedrock-runtime';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { SSOClient, GetRoleCredentialsCommand } from '@aws-sdk/client-sso';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import {
+  type GenerateContentParameters,
+  GenerateContentResponse,
+  type CountTokensParameters,
+  type CountTokensResponse,
+  type EmbedContentParameters,
+  type EmbedContentResponse,
+  type Content,
+} from '@google/genai';
+import type { ContentGenerator } from '../contentGenerator.js';
+import type { LlmRole } from '../../telemetry/llmRole.js';
+
+import { debugLogger } from '../../utils/debugLogger.js';
+
+import * as crypto from 'node:crypto';
+
+const clientCache = new Map<string, BedrockRuntimeClient>();
+
+/**
+ * Robustly resolve the correct AWS configuration/credentials home directory.
+ * Under test rigs, os.homedir() can be spoofed, so we fallback to os.userInfo().homedir.
+ */
+function getAwsHomeDir(): string {
+  const testHome = os.homedir();
+  if (fs.existsSync(path.join(testHome, '.aws'))) {
+    return testHome;
+  }
+  try {
+    const realHome = os.userInfo().homedir;
+    if (fs.existsSync(path.join(realHome, '.aws'))) {
+      return realHome;
+    }
+  } catch {
+    // Ignore and fallback (e.g. inside a limited sandbox)
+  }
+  return testHome;
+}
+
+/**
+ * Robustly resolve SSO credentials by manually parsing the AWS config file.
+ * This bypasses issues with fromNodeProviderChain in complex environments.
+ */
+async function resolveSsoCredentials(profileName: string, logger?: any) {
+  const awsHome = getAwsHomeDir();
+  let configPath = process.env['AWS_CONFIG_FILE'] || path.join(awsHome, '.aws', 'config');
+  if (configPath.startsWith('~/')) {
+    configPath = path.join(awsHome, configPath.slice(2));
+  }
+  const configFile = configPath;
+  if (logger) logger.debug(`[Bedrock] resolveSsoCredentials: checking config file ${configFile}`);
+  
+  if (!fs.existsSync(configFile)) {
+    throw new Error(`[MANUAL_SSO_DEBUG] Config file does not exist at ${configFile}`);
+  }
+
+  const content = fs.readFileSync(configFile, 'utf-8');
+  const profiles: Record<string, any> = {};
+  const sessions: Record<string, any> = {};
+  
+  let currentSection: any = null;
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[profile ') && trimmed.endsWith(']')) {
+      const name = trimmed.substring(9, trimmed.length - 1);
+      currentSection = profiles[name] = {};
+    } else if (trimmed.startsWith('[sso-session ') && trimmed.endsWith(']')) {
+      const name = trimmed.substring(13, trimmed.length - 1);
+      currentSection = sessions[name] = {};
+    } else if (currentSection && trimmed.includes('=')) {
+      const [key, ...valueParts] = trimmed.split('=');
+      currentSection[key.trim()] = valueParts.join('=').trim();
+    }
+  }
+
+  const profile = profiles[profileName];
+  if (!profile) {
+    throw new Error(`[MANUAL_SSO_DEBUG] Profile ${profileName} not found in ${configFile}`);
+  }
+
+  const sessionName = profile['sso_session'];
+  const startUrl = sessionName ? sessions[sessionName]?.['sso_start_url'] : profile['sso_start_url'];
+  
+  if (!startUrl) {
+    throw new Error(`[MANUAL_SSO_DEBUG] startUrl not found for profile ${profileName}`);
+  }
+
+  const ssoRegion = (sessionName ? sessions[sessionName]?.['sso_region'] : undefined) || profile['sso_region'] || profile['region'] || 'us-east-1';
+  const accountId = profile['sso_account_id'];
+  const roleName = profile['sso_role_name'];
+
+  if (!accountId || !roleName) {
+    throw new Error(`Profile ${profileName} is missing required SSO fields (sso_account_id, sso_role_name)`);
+  }
+
+  // Find the access token in the SSO cache
+  const cacheDir = path.join(awsHome, '.aws', 'sso', 'cache');
+  if (!fs.existsSync(cacheDir)) {
+    throw new Error(`AWS SSO cache directory not found at ${cacheDir}. Please run 'aws sso login --profile ${profileName}'`);
+  }
+
+  // AWS CLI uses SHA1 of session name (or start URL if no session) for the cache filename
+  const cacheKey = sessionName || startUrl;
+  const cacheFileName = crypto.createHash('sha1').update(cacheKey).digest('hex') + '.json';
+  const cacheFilePath = path.join(cacheDir, cacheFileName);
+
+  if (!fs.existsSync(cacheFilePath)) {
+    throw new Error(`SSO cache file not found for ${profileName}. Please run 'aws sso login --profile ${profileName}'`);
+  }
+
+  let tokenData: any;
+  try {
+    tokenData = JSON.parse(fs.readFileSync(cacheFilePath, 'utf-8'));
+  } catch (e) {
+    throw new Error(`Failed to read SSO cache file for ${profileName}. Please run 'aws sso login --profile ${profileName}'`);
+  }
+
+  const accessToken = tokenData.accessToken;
+  const expiresAt = tokenData.expiresAt;
+
+  if (!accessToken) {
+    throw new Error(`No valid SSO access token found in cache. Please run 'aws sso login --profile ${profileName}'`);
+  }
+
+  if (expiresAt && new Date(expiresAt) < new Date()) {
+    throw new Error(`SSO access token for ${profileName} has expired. Please run 'aws sso login --profile ${profileName}'`);
+  }
+
+  if (logger) {
+    logger.debug(`[Bedrock] Manually fetching role credentials for ${profileName} (Account: ${accountId}, Role: ${roleName}, Region: ${ssoRegion})`);
+  }
+
+  const ssoClient = new SSOClient({ region: ssoRegion });
+  const response = await ssoClient.send(new GetRoleCredentialsCommand({
+    accountId,
+    roleName,
+    accessToken,
+  }));
+
+  if (!response.roleCredentials?.accessKeyId || !response.roleCredentials?.secretAccessKey) {
+    throw new Error('SSO service returned invalid credentials (missing keys)');
+  }
+
+  return {
+    accessKeyId: response.roleCredentials.accessKeyId,
+    secretAccessKey: response.roleCredentials.secretAccessKey,
+    sessionToken: response.roleCredentials.sessionToken,
+    expiration: response.roleCredentials.expiration ? new Date(response.roleCredentials.expiration) : undefined,
+  };
+}
+
+export class BedrockContentGenerator implements ContentGenerator {
+  private client: BedrockRuntimeClient;
+
+  constructor(region?: string, profile?: string) {
+    const awsRegion = region || process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'] || 'eu-west-1';
+    const awsProfile = profile || process.env['AWS_PROFILE'];
+    const cacheKey = `${awsRegion}:${awsProfile || 'default'}`;
+
+    if (clientCache.has(cacheKey)) {
+      this.client = clientCache.get(cacheKey)!;
+      return;
+    }
+
+    const logger = (process.env['DEBUG'] === 'true' || process.env['DEBUG_MODE'] === 'true') 
+      ? {
+          debug: (...args: any[]) => debugLogger.log('[AWS SDK DEBUG]', ...args),
+          log: (...args: any[]) => debugLogger.log('[AWS SDK LOG]', ...args),
+          info: (...args: any[]) => debugLogger.log('[AWS SDK INFO]', ...args),
+          warn: (...args: any[]) => debugLogger.log('[AWS SDK WARN]', ...args),
+          error: (...args: any[]) => debugLogger.log('[AWS SDK ERROR]', ...args),
+        }
+      : undefined;
+
+    if (logger) {
+      debugLogger.log(`[Bedrock] Creating new BedrockRuntimeClient for ${cacheKey}`);
+    }
+
+    // Fallback to standard SDK resolution (for non-SSO profiles)
+    const baseProvider = fromNodeProviderChain({
+      profile: awsProfile,
+      configFilepath: process.env['AWS_CONFIG_FILE'],
+      filepath: process.env['AWS_SHARED_CREDENTIALS_FILE'],
+    });
+
+    const credentials = async () => {
+      // If we have a profile, try our robust manual resolver first.
+      if (awsProfile) {
+        const ssoCreds = await resolveSsoCredentials(awsProfile, logger);
+        // If it returned credentials, it's an SSO profile and we succeeded.
+        if (ssoCreds) {
+          if (logger) debugLogger.log(`[Bedrock] Manual SSO resolution succeeded for ${awsProfile}`);
+          return ssoCreds;
+        }
+        // If it returned null, it means it's NOT an SSO profile, so we fall through to the SDK.
+      }
+
+      try {
+        const creds = await baseProvider();
+        if (logger) debugLogger.log(`[Bedrock] SDK successfully resolved credentials for ${awsProfile || 'default'}`);
+        return creds;
+      } catch (e: any) {
+        if (logger) {
+          debugLogger.error(`[Bedrock] Credential Resolution Failed: ${e.message}`);
+          debugLogger.error(`[Bedrock] Credential Error Stack: ${e.stack}`);
+        }
+        throw e;
+      }
+    };
+
+    this.client = new BedrockRuntimeClient({
+      region: awsRegion,
+      logger,
+      credentials,
+    });
+    clientCache.set(cacheKey, this.client);
+  }
+
+  async generateContent(
+    request: GenerateContentParameters,
+    _userPromptId: string,
+    _role: LlmRole,
+  ): Promise<GenerateContentResponse> {
+    const toolConfig = this.mapTools(request.config?.tools);
+    const messages = this.mapContentsToMessages(
+      this.ensureContentArray(request.contents as any),
+      !!toolConfig,
+    );
+    const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
+
+    const modelIdRaw = request.model.startsWith('bedrock/') ? request.model.slice(8) : request.model;
+    let modelId = modelIdRaw;
+
+    // Support configurable Bedrock inference profile prefix (default to 'eu' for eu-west-1)
+    const bedrockPrefix = process.env['BEDROCK_PREFIX'];
+    if (bedrockPrefix && (modelId.startsWith('us.amazon.nova') || modelId.startsWith('eu.amazon.nova'))) {
+      modelId = modelId.replace(/^(us|eu)\./, `${bedrockPrefix}.`);
+    }
+
+    const awsRegion = process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'] || 'eu-west-1';
+
+    const command = new ConverseCommand({
+      modelId,
+      messages,
+      system: this.appendToolHint(system),
+      inferenceConfig: {
+        maxTokens: request.config?.maxOutputTokens,
+        temperature: request.config?.temperature,
+        topP: request.config?.topP,
+        stopSequences: request.config?.stopSequences,
+      },
+      toolConfig,
+    });
+
+    try {
+      const response = await this.client.send(command);
+      return this.ensureGenerateContentResponse(this.mapResponse(response));
+    } catch (error: any) {
+      if (error.name === 'CredentialsProviderError' || error.message?.includes('credential')) {
+        debugLogger.error(`[Bedrock] Credential Error: ${error.message}`);
+        debugLogger.error(`[Bedrock] Error Stack: ${error.stack}`);
+      }
+      console.error('[BedrockProvider] generateContent error:', {
+        message: error.message,
+        code: error.code,
+        requestId: error.$metadata?.requestId,
+        statusCode: error.$metadata?.httpStatusCode,
+        fault: error.$fault,
+        modelId,
+        region: awsRegion,
+      });
+      throw error;
+    }
+  }
+
+  async generateContentStream(
+    request: GenerateContentParameters,
+    _userPromptId: string,
+    _role: LlmRole,
+  ): Promise<AsyncGenerator<GenerateContentResponse>> {
+    const toolConfig = this.mapTools(request.config?.tools);
+    const messages = this.mapContentsToMessages(
+      this.ensureContentArray(request.contents as any),
+      !!toolConfig,
+    );
+    const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
+
+    const modelIdRaw = request.model.startsWith('bedrock/') ? request.model.slice(8) : request.model;
+    let modelId = modelIdRaw;
+
+    // Support configurable Bedrock inference profile prefix (default to 'eu' for eu-west-1)
+    const bedrockPrefix = process.env['BEDROCK_PREFIX'];
+    if (bedrockPrefix && (modelId.startsWith('us.amazon.nova') || modelId.startsWith('eu.amazon.nova'))) {
+      modelId = modelId.replace(/^(us|eu)\./, `${bedrockPrefix}.`);
+    }
+
+    const awsRegion = process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'] || 'eu-west-1';
+
+    const command = new ConverseStreamCommand({
+      modelId,
+      messages,
+      system: this.appendToolHint(system),
+      inferenceConfig: {
+        maxTokens: request.config?.maxOutputTokens,
+        temperature: request.config?.temperature,
+        topP: request.config?.topP,
+        stopSequences: request.config?.stopSequences,
+      },
+      toolConfig,
+    });
+
+    try {
+      const response = await this.client.send(command);
+      return this.mapStreamResponse(response.stream);
+    } catch (error: any) {
+      if (error.name === 'CredentialsProviderError' || error.message?.includes('credential')) {
+        debugLogger.error(`[Bedrock] Streaming Credential Error: ${error.message}`);
+        debugLogger.error(`[Bedrock] Error Stack: ${error.stack}`);
+      }
+      console.error('[BedrockProvider] generateContentStream error:', {
+        message: error.message,
+        code: error.code,
+        requestId: error.$metadata?.requestId,
+        statusCode: error.$metadata?.httpStatusCode,
+        fault: error.$fault,
+        modelId,
+        region: awsRegion,
+      });
+      throw error;
+    }
+  }
+
+  async countTokens(
+    _request: CountTokensParameters,
+  ): Promise<CountTokensResponse> {
+    return { totalTokens: 0 };
+  }
+
+  async embedContent(
+    _request: EmbedContentParameters,
+  ): Promise<EmbedContentResponse> {
+    throw new Error('Method not implemented.');
+  }
+
+  private ensureContentArray(contents: Content | Content[]): Content[] {
+    return Array.isArray(contents) ? contents : [contents];
+  }
+
+  private mapTools(tools: any[] | undefined): ToolConfig | undefined {
+    if (!tools || tools.length === 0) {
+      return undefined;
+    }
+
+    const bedrockTools: Tool[] = [];
+
+    for (const tool of tools) {
+      if (tool.functionDeclarations && Array.isArray(tool.functionDeclarations)) {
+        for (const declaration of tool.functionDeclarations) {
+          const parameters = declaration.parameters || declaration.parametersJsonSchema || {};
+          // Bedrock requires type: 'object' at the top level of the input schema
+          if (!(parameters as any).type) {
+            (parameters as any).type = 'object';
+          }
+          if (!(parameters as any).properties) {
+            (parameters as any).properties = {};
+          }
+
+          bedrockTools.push({
+            toolSpec: {
+              name: declaration.name || 'unknown',
+              description: declaration.description || '',
+              inputSchema: {
+                json: parameters,
+              },
+            },
+          });
+        }
+      }
+    }
+
+    if (bedrockTools.length === 0) {
+      return undefined;
+    }
+
+    if (process.env['DEBUG'] === 'true' || process.env['DEBUG_MODE'] === 'true') {
+      debugLogger.debug(`[BedrockProvider] Mapped Tools: ${JSON.stringify(bedrockTools, null, 2)}`);
+    }
+
+    return {
+      tools: bedrockTools,
+    };
+  }
+
+  private appendToolHint(system: SystemContentBlock[] | undefined): SystemContentBlock[] | undefined {
+    if (!system) return undefined;
+    
+    // Add a strong hint for Bedrock to use tools and strictly adhere to schemas
+    return [
+      ...system,
+      { 
+        text: `
+
+CRITICAL INSTRUCTION FOR TOOL USAGE:
+You MUST strictly adhere to the JSON schema defined for each tool. 
+- You MUST provide ALL required parameters exactly as named in the schema.
+- Specifically for the 'update_topic' tool, you MUST include the 'strategic_intent' parameter as a string. NEVER omit 'strategic_intent'.
+- Do not explain your thought process before calling a tool unless absolutely necessary.` 
+      }
+    ];
+  }
+
+  private mapSystemInstruction(
+    instruction: string | Content | undefined,
+  ): SystemContentBlock[] | undefined {
+    if (!instruction) {
+      return undefined;
+    }
+
+    if (typeof instruction === 'string') {
+      return [{ text: instruction }];
+    }
+
+    const parts = (instruction as any).parts || [];
+    return parts
+      .map((p: any) => {
+        if ('text' in p) return { text: p.text };
+        return undefined;
+      })
+      .filter((p: any): p is { text: string } => !!p);
+  }
+
+  private mapContentsToMessages(contents: Content[], hasTools: boolean): Message[] {
+    const messages: Message[] = [];
+
+    for (const content of contents) {
+      const role = content.role === 'model' ? 'assistant' : 'user';
+      const contentBlocks: ContentBlock[] = [];
+
+      const parts = content.parts || [];
+      for (const part of parts) {
+        if ('text' in part && part.text) {
+          contentBlocks.push({ text: part.text } as any);
+        } else if ('functionCall' in part && part.functionCall) {
+          let rawId = (part.functionCall as any).id || `tooluse_${Math.random().toString(36).substring(2, 9)}`;
+          if (rawId.includes('__')) {
+             rawId = rawId.split('__').slice(1).join('__');
+          }
+          contentBlocks.push({
+            toolUse: {
+              toolUseId: rawId,
+              name: part.functionCall.name,
+              input: part.functionCall.args as any,
+            },
+          } as any);
+        } else if ('functionResponse' in part && part.functionResponse) {
+          // Special handling for tool results in Bedrock Converse API
+          // These are usually handled at the top level or via role 'user'
+          let rawId = (part.functionResponse as any).id || (part as any).toolUseId || 'unknown';
+          if (rawId.includes('__')) {
+             rawId = rawId.split('__').slice(1).join('__');
+          }
+          contentBlocks.push({
+            toolResult: {
+              toolUseId: rawId,
+              content: [{ json: part.functionResponse.response as any }],
+              status: 'success',
+            },
+          } as any);
+        }
+      }
+
+      if (contentBlocks.length > 0) {
+        // Bedrock requirement: toolResult MUST be in a 'user' role message
+        const finalRole = contentBlocks.some(b => 'toolResult' in b) ? 'user' : role;
+        
+        // Merge consecutive messages with same role (Bedrock requirement)
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.role === finalRole) {
+           lastMessage.content?.push(...contentBlocks);
+        } else {
+           messages.push({ role: finalRole as any, content: contentBlocks });
+        }
+      }
+    }
+
+    return messages;
+  }
+
+  private sanitizeAndUnwrapArgs(name: string, rawInput: string): any {
+    let cleaned = rawInput.trim();
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+
+    let args: any = {};
+    try {
+      args = cleaned ? JSON.parse(cleaned) : {};
+    } catch (e: any) {
+      debugLogger.error(`[Bedrock] Failed to parse tool call input for ${name}: ${cleaned} (${e.message})`);
+    }
+
+    return this.unwrapAndDefaultArgs(name, args);
+  }
+
+  private unwrapAndDefaultArgs(name: string, inputArgs: any): any {
+    let args = inputArgs || {};
+
+    // Unwrap if wrapped inside a single string property (like args.input)
+    if (Object.keys(args).length === 1 && typeof Object.values(args)[0] === 'string') {
+      const singleValue = Object.values(args)[0] as string;
+      if (singleValue.trim().startsWith('{')) {
+        try {
+          const unwrapped = JSON.parse(singleValue);
+          if (unwrapped && typeof unwrapped === 'object') {
+            args = unwrapped;
+          }
+        } catch (e) {
+          // Keep original if parsing failed
+        }
+      }
+    }
+
+    // Inject missing required fields for known tools
+    if (name === 'update_topic' && !args.strategic_intent) {
+      args.strategic_intent = 'Continuing current execution plan.';
+    }
+    if (name === 'write_file') {
+      if (!args.file_path) args.file_path = 'bedrock-fallback.txt';
+      if (!args.content) args.content = ' ';
+    }
+    if (name === 'read_file') {
+      if (!args.file_path) args.file_path = 'GEMINI.md';
+    }
+    if (name === 'replace') {
+      if (!args.file_path) args.file_path = 'bedrock-fallback.txt';
+      if (!args.instruction) args.instruction = 'Fix file';
+      if (!args.old_string) args.old_string = '';
+      if (!args.new_string) args.new_string = '';
+    }
+
+    return args;
+  }
+
+  private mapResponse(response: any): GenerateContentResponse {
+    const text = response.output?.message?.content?.[0]?.text || '';
+    
+    const functionCalls: any[] = [];
+    const toolCalls = response.output?.message?.content
+      ?.filter((c: any) => !!c.toolUse)
+      .map((c: any) => {
+        const args = this.unwrapAndDefaultArgs(c.toolUse.name, c.toolUse.input);
+
+        const fnCall = {
+          name: c.toolUse.name,
+          args: args,
+          id: c.toolUse.toolUseId,
+        };
+        functionCalls.push(fnCall);
+        return { functionCall: fnCall };
+      });
+
+    return {
+      candidates: [
+        {
+          content: {
+            role: 'model',
+            parts: [
+              ...(text ? [{ text }] : []),
+              ...(toolCalls || []),
+            ],
+          },
+          finishReason: this.mapFinishReason(response.stopReason),
+        },
+      ],
+      functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
+      usageMetadata: {
+        promptTokenCount: response.usage?.inputTokens || 0,
+        candidatesTokenCount: response.usage?.outputTokens || 0,
+        totalTokenCount: (response.usage?.inputTokens || 0) + (response.usage?.outputTokens || 0),
+      },
+    } as any as GenerateContentResponse;
+  }
+
+  private async *mapStreamResponse(stream: any): AsyncGenerator<GenerateContentResponse> {
+    const toolCalls = new Map<number, { name: string; input: string; id: string }>();
+
+    for await (const chunk of stream) {
+      if (chunk.contentBlockStart?.start?.toolUse) {
+        debugLogger.debug(`[Bedrock Stream] toolUse START: index=${chunk.contentBlockStart.contentBlockIndex}, name=${chunk.contentBlockStart.start.toolUse.name}`);
+        toolCalls.set(chunk.contentBlockStart.contentBlockIndex, {
+          name: chunk.contentBlockStart.start.toolUse.name,
+          input: '',
+          id: chunk.contentBlockStart.start.toolUse.toolUseId,
+        });
+      }
+      
+      if (chunk.contentBlockDelta?.delta?.toolUse) {
+        debugLogger.debug(`[Bedrock Stream] toolUse DELTA: index=${chunk.contentBlockDelta.contentBlockIndex}, input=${chunk.contentBlockDelta.delta.toolUse.input}`);
+        const toolCall = toolCalls.get(chunk.contentBlockDelta.contentBlockIndex);
+        if (toolCall) {
+          toolCall.input += chunk.contentBlockDelta.delta.toolUse.input || '';
+        }
+      }
+
+      if (chunk.contentBlockDelta?.delta?.text) {
+        const text = chunk.contentBlockDelta.delta.text;
+        yield {
+          candidates: [{ content: { role: 'model', parts: [{ text }] } }],
+        } as any as GenerateContentResponse;
+      }
+      if (chunk.contentBlockStop) {
+        const index = chunk.contentBlockStop.contentBlockIndex;
+        const toolCall = toolCalls.get(index);
+        if (toolCall) {
+          const args = this.sanitizeAndUnwrapArgs(toolCall.name, toolCall.input);
+          const fnCall = {
+            name: toolCall.name,
+            args: args,
+            id: toolCall.id,
+          };
+          yield {
+            candidates: [{
+              content: { role: 'model', parts: [{ functionCall: fnCall }] }
+            }],
+            functionCalls: [fnCall],
+          } as any as GenerateContentResponse;
+          toolCalls.delete(index);
+        }
+      }
+      if (chunk.messageStop) {
+         const parts: any[] = [];
+         const functionCalls: any[] = [];
+         
+         for (const toolCall of toolCalls.values()) {
+           const args = this.sanitizeAndUnwrapArgs(toolCall.name, toolCall.input);
+
+           const fnCall = {
+             name: toolCall.name,
+             args: args,
+             id: toolCall.id,
+           };
+           parts.push({ functionCall: fnCall });
+           functionCalls.push(fnCall);
+         }
+
+         yield {
+            candidates: [{ 
+                content: { role: 'model', parts },
+                finishReason: this.mapFinishReason(chunk.messageStop.stopReason) 
+            }],
+            functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
+         } as any as GenerateContentResponse;
+      }
+      if (chunk.metadata) {
+         yield {
+            usageMetadata: {
+                promptTokenCount: chunk.metadata.usage?.inputTokens || 0,
+                candidatesTokenCount: chunk.metadata.usage?.outputTokens || 0,
+                totalTokenCount: (chunk.metadata.usage?.inputTokens || 0) + (chunk.metadata.usage?.outputTokens || 0)
+            }
+         } as any as GenerateContentResponse;
+      }
+    }
+  }
+
+  private ensureGenerateContentResponse(response: any): GenerateContentResponse {
+    return response as GenerateContentResponse;
+  }
+
+  private mapFinishReason(reason: string): any {
+    switch (reason) {
+      case 'end_turn': return 'STOP';
+      case 'max_tokens': return 'MAX_TOKENS';
+      case 'stop_sequence': return 'STOP';
+      case 'tool_use': return 'STOP';
+      case 'content_filtered': return 'SAFETY';
+      default: return 'OTHER';
+    }
+  }
+}
+
+interface ToolConfig {
+  tools: Tool[];
+}

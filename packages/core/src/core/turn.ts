@@ -28,6 +28,7 @@ import {
 } from '../utils/errors.js';
 import { InvalidStreamError, type GeminiChat } from './geminiChat.js';
 import { parseThought, type ThoughtSummary } from '../utils/thoughtUtils.js';
+import { XmlToolParser } from '../utils/xmlToolParser.js';
 import type { ModelConfigKey } from '../services/modelConfigService.js';
 import { getCitations } from '../utils/generateContentResponseUtilities.js';
 import { LlmRole } from '../telemetry/types.js';
@@ -248,6 +249,9 @@ export class Turn {
   finishReason: FinishReason | undefined = undefined;
   private hasLoggedRagTrace = false;
 
+  private xmlToolParser = new XmlToolParser();
+  private emittedSyntheticCallHashes = new Set<string>();
+
   constructor(
     private readonly chat: GeminiChat,
     private readonly prompt_id: string,
@@ -362,6 +366,20 @@ export class Turn {
         const text = getResponseText(resp);
         if (text) {
           yield { type: GeminiEventType.Content, value: text, traceId };
+
+          // Parse XML tags from text chunks
+          const syntheticCalls = this.xmlToolParser.parse(text);
+          for (const fnCall of syntheticCalls) {
+            // Generate a hash to avoid double-emitting the same tool call from the stream buffer
+            const hash = `${fnCall.name}:${JSON.stringify(fnCall.args)}`;
+            if (!this.emittedSyntheticCallHashes.has(hash)) {
+              this.emittedSyntheticCallHashes.add(hash);
+              const event = this.handlePendingFunctionCall(fnCall, traceId);
+              if (event) {
+                yield event;
+              }
+            }
+          }
         }
 
         // Handle function calls (requesting tool execution)
@@ -431,7 +449,7 @@ export class Turn {
         typeof error === 'object' &&
         error !== null &&
         'status' in error &&
-        typeof (error as { status: unknown }).status === 'number'
+        typeof (error).status === 'number'
           ? // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
             (error as { status: number }).status
           : undefined;

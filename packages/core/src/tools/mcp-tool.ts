@@ -592,16 +592,15 @@ export function generateValidName(name: string) {
   // Enforce the mcp_ prefix for all generated MCP tool names
   let validToolname = name.startsWith('mcp_') ? name : `mcp_${name}`;
 
-  // Replace invalid characters with underscores to conform to Gemini API:
-  // ^[a-zA-Z_][a-zA-Z0-9_\-.:]{0,63}$
-  validToolname = validToolname.replace(/[^a-zA-Z0-9_\-.:]/g, '_');
+  // Replace invalid characters with underscores to conform to LLM APIs (OpenAI, Bedrock, etc. usually require [a-zA-Z0-9_-]+):
+  validToolname = validToolname.replace(/[^a-zA-Z0-9_\-]/g, '_');
 
   // Ensure it starts with a letter or underscore
   if (/^[^a-zA-Z_]/.test(validToolname)) {
     validToolname = `_${validToolname}`;
   }
 
-  // If longer than the API limit, replace middle with '...'
+  // If longer than the API limit, replace middle with '___'
   // Note: We use 63 instead of 64 to be safe, as some environments have off-by-one behaviors.
   const safeLimit = MAX_FUNCTION_NAME_LENGTH - 1;
   if (validToolname.length > safeLimit) {
@@ -609,7 +608,7 @@ export function generateValidName(name: string) {
       `Truncating MCP tool name "${validToolname}" to fit within the 64 character limit. This tool may require user approval.`,
     );
     validToolname =
-      validToolname.slice(0, 30) + '...' + validToolname.slice(-30);
+      validToolname.slice(0, 30) + '___' + validToolname.slice(-30);
   }
 
   return validToolname;
