@@ -17,7 +17,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { copyFileSync, existsSync, mkdirSync, cpSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, cpSync, rmSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { glob } from 'glob';
@@ -70,6 +70,9 @@ console.log(
 const docsSrc = join(root, 'docs');
 const docsDest = join(bundleDir, 'docs');
 if (existsSync(docsSrc)) {
+  if (existsSync(docsDest)) {
+    rmSync(docsDest, { recursive: true, force: true });
+  }
   cpSync(docsSrc, docsDest, { recursive: true, dereference: true });
   console.log('Copied docs to bundle/docs/');
 }
@@ -78,6 +81,9 @@ if (existsSync(docsSrc)) {
 const builtinSkillsSrc = join(root, 'packages/core/src/skills/builtin');
 const builtinSkillsDest = join(bundleDir, 'builtin');
 if (existsSync(builtinSkillsSrc)) {
+  if (existsSync(builtinSkillsDest)) {
+    rmSync(builtinSkillsDest, { recursive: true, force: true });
+  }
   cpSync(builtinSkillsSrc, builtinSkillsDest, {
     recursive: true,
     dereference: true,
@@ -93,6 +99,9 @@ if (!existsSync(bundleMcpSrc)) {
     `Warning: chrome-devtools-mcp bundle not found at ${bundleMcpSrc}. Skipping.`,
   );
 } else {
+  if (existsSync(bundleMcpDest)) {
+    rmSync(bundleMcpDest, { recursive: true, force: true });
+  }
   cpSync(bundleMcpSrc, bundleMcpDest, { recursive: true, dereference: true });
   console.log('Copied bundled chrome-devtools-mcp to bundle/bundled/');
 }
@@ -106,6 +115,9 @@ const extensionExamplesDest = join(bundleDir, 'examples');
 const EXCLUDED_EXAMPLE_DIRS = ['node_modules', 'dist'];
 
 if (existsSync(extensionExamplesSrc)) {
+  if (existsSync(extensionExamplesDest)) {
+    rmSync(extensionExamplesDest, { recursive: true, force: true });
+  }
   cpSync(extensionExamplesSrc, extensionExamplesDest, {
     recursive: true,
     dereference: true,

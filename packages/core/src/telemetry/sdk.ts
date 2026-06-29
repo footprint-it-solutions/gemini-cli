@@ -21,7 +21,7 @@ import { OTLPMetricExporter as OTLPMetricExporterHttp } from '@opentelemetry/exp
 import { CompressionAlgorithm } from '@opentelemetry/otlp-exporter-base';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
-import { Resource } from '@opentelemetry/resources';
+import { resourceFromAttributes } from '@opentelemetry/resources';
 import {
   BatchSpanProcessor,
   ConsoleSpanExporter,
@@ -102,11 +102,9 @@ let callbackRegistered = false;
 let authListener: ((newCredentials: JWTInput) => Promise<void>) | undefined =
   undefined;
 let keychainAvailabilityListener:
-  | ((event: KeychainAvailabilityEvent) => void)
-  | undefined = undefined;
+  ((event: KeychainAvailabilityEvent) => void) | undefined = undefined;
 let tokenStorageTypeListener:
-  | ((event: TokenStorageInitializationEvent) => void)
-  | undefined = undefined;
+  ((event: TokenStorageInitializationEvent) => void) | undefined = undefined;
 const telemetryBuffer: Array<() => void | Promise<void>> = [];
 let activeTelemetryEmail: string | undefined;
 
@@ -211,7 +209,7 @@ export async function initializeTelemetry(
     return;
   }
 
-  const resource = new Resource({
+  const resource = resourceFromAttributes({
     [SemanticResourceAttributes.SERVICE_NAME]: SERVICE_NAME,
     [SemanticResourceAttributes.SERVICE_VERSION]: process.version,
     'session.id': config.getSessionId(),

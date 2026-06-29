@@ -106,7 +106,7 @@ describe('activate', () => {
   it('should show the info message on first activation', async () => {
     const showInformationMessageMock = vi
       .mocked(vscode.window.showInformationMessage)
-      .mockResolvedValue(undefined as never);
+      .mockResolvedValue(undefined);
     vi.mocked(context.globalState.get).mockReturnValue(undefined);
     vi.mocked(vscode.extensions.getExtension).mockReturnValue({
       packageJSON: { version: '1.1.0' },
