@@ -209,6 +209,56 @@ describe('BedrockContentGenerator', () => {
     });
   });
 
+  it('should fix Bedrock Nova dropping base indentation on new_string for replace tool', async () => {
+    mockClient.send.mockResolvedValue({
+      output: {
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              toolUse: {
+                toolUseId: 'replace_call',
+                name: 'replace',
+                input: {
+                  file_path: 'test.go',
+                  instruction: 'Fix error block',
+                  old_string: '    polly, err := pkgpolly.NewClient(...)',
+                  new_string: '    polly, err := pkgpolly.NewClient(...)\nif err != nil {\n    slog.Error(...)\n}',
+                },
+              },
+            },
+          ],
+        },
+      },
+      stopReason: 'tool_use',
+    });
+
+    const request: any = {
+      model: 'us.amazon.nova-2-lite-v1:0',
+      contents: [{ role: 'user', parts: [{ text: 'Replace text' }] }],
+      config: {
+        tools: [
+          {
+            functionDeclarations: [
+              { name: 'replace', description: 'Replace string' },
+            ],
+          },
+        ],
+      },
+    };
+
+    const response = await generator.generateContent(request, 'prompt-id', LlmRole.MAIN);
+
+    const call = response.candidates?.[0].content?.parts?.[0].functionCall;
+    expect(call?.name).toBe('replace');
+    expect(call?.args).toEqual({
+      file_path: 'test.go',
+      instruction: 'Fix error block',
+      old_string: '    polly, err := pkgpolly.NewClient(...)',
+      new_string: '    polly, err := pkgpolly.NewClient(...)\n    if err != nil {\n        slog.Error(...)\n    }',
+    });
+  });
+
   it('should generate content stream and handle metadata correctly', async () => {
     const mockStream = (async function* () {
       yield { contentBlockDelta: { delta: { text: 'Hello' } } };

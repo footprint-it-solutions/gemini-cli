@@ -44,6 +44,71 @@ describe('BedrockContentGenerator (Nova Support)', () => {
     });
   });
 
+  describe('credential provider logic', () => {
+    it('should try standard baseProvider first, and recreate standard provider if it throws', async () => {
+      const mockBaseProvider = vi.fn();
+      vi.mocked(fromNodeProviderChain).mockReturnValue(mockBaseProvider);
+
+      const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime');
+      vi.mocked(BedrockRuntimeClient).mockClear();
+
+      const uniqueProfile = `test-profile-${Math.random()}`;
+      new BedrockContentGenerator('us-west-2', uniqueProfile);
+
+      // Capture the constructor arguments of BedrockRuntimeClient
+      const constructorCalls = vi.mocked(BedrockRuntimeClient).mock.calls;
+      expect(constructorCalls.length).toBeGreaterThan(0);
+      const passedOptions = constructorCalls[0][0] as any;
+      const capturedCredentialsProvider = passedOptions.credentials;
+
+      expect(typeof capturedCredentialsProvider).toBe('function');
+
+      // Setup standard provider to fail on first attempt
+      mockBaseProvider.mockRejectedValueOnce(new Error('SSO token expired'));
+
+      // Invoke credentials wrapper. It should fail on standard, call fromNodeProviderChain to re-create standard provider, and throw since fallback fails too
+      vi.mocked(fromNodeProviderChain).mockClear();
+      try {
+        await capturedCredentialsProvider();
+      } catch (e) {
+        // Expected
+      }
+
+      // Check standard provider was re-created after failure
+      expect(fromNodeProviderChain).toHaveBeenCalledTimes(1);
+    });
+
+    it('should use standard baseProvider successfully on second try without sticky failures', async () => {
+      const mockBaseProvider = vi.fn();
+      vi.mocked(fromNodeProviderChain).mockReturnValue(mockBaseProvider);
+
+      const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime');
+      vi.mocked(BedrockRuntimeClient).mockClear();
+
+      const uniqueProfile = `test-profile-${Math.random()}`;
+      new BedrockContentGenerator('us-west-2', uniqueProfile);
+
+      const constructorCalls = vi.mocked(BedrockRuntimeClient).mock.calls;
+      const passedOptions = constructorCalls[0][0] as any;
+      const capturedCredentialsProvider = passedOptions.credentials;
+
+      // First run throws an error (e.g. token expired, before login)
+      mockBaseProvider.mockRejectedValueOnce(new Error('SSO token expired'));
+      try {
+        await capturedCredentialsProvider();
+      } catch (e) {
+        // Expected
+      }
+
+      // Second run succeeds (e.g. user logged in successfully in another terminal)
+      const mockCreds = { accessKeyId: 'key', secretAccessKey: 'secret' };
+      mockBaseProvider.mockResolvedValue(mockCreds);
+
+      const resolved = await capturedCredentialsProvider();
+      expect(resolved).toEqual(mockCreds);
+    });
+  });
+
   describe('mapContentsToMessages', () => {
     it('should map user message correctly', () => {
       const contents = [{ role: 'user', parts: [{ text: 'Hello' }] }];
@@ -110,6 +175,42 @@ describe('BedrockContentGenerator (Nova Support)', () => {
             },
           },
         ],
+      });
+    });
+
+    it('should deduplicate duplicate toolResult blocks by toolUseId', () => {
+      const contents = [
+        {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: 'get_weather',
+                response: { temp: 20 },
+                id: 'call_123',
+              },
+            },
+            {
+              functionResponse: {
+                name: 'get_weather',
+                response: { temp: 20 },
+                id: 'call_123',
+              },
+            },
+          ],
+        },
+      ];
+
+      const messages = (generator as unknown as { mapContentsToMessages: (c: any, t: boolean) => any }).mapContentsToMessages(contents, true);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toHaveLength(1);
+      expect(messages[0].content[0]).toEqual({
+        toolResult: {
+          toolUseId: 'call_123',
+          content: [{ json: { temp: 20 } }],
+          status: 'success',
+        },
       });
     });
   });

@@ -196,35 +196,67 @@ export class BedrockContentGenerator implements ContentGenerator {
     }
 
     // Fallback to standard SDK resolution (for non-SSO profiles)
-    const baseProvider = fromNodeProviderChain({
+    let baseProvider = fromNodeProviderChain({
       profile: awsProfile,
       configFilepath: process.env['AWS_CONFIG_FILE'],
       filepath: process.env['AWS_SHARED_CREDENTIALS_FILE'],
     });
 
-    const credentials = async () => {
-      // If we have a profile, try our robust manual resolver first.
-      if (awsProfile) {
-        const ssoCreds = await resolveSsoCredentials(awsProfile, logger);
-        // If it returned credentials, it's an SSO profile and we succeeded.
-        if (ssoCreds) {
-          if (logger) debugLogger.log(`[Bedrock] Manual SSO resolution succeeded for ${awsProfile}`);
-          return ssoCreds;
-        }
-        // If it returned null, it means it's NOT an SSO profile, so we fall through to the SDK.
-      }
+    let cachedCustomCreds: any = null;
+    let customRefreshPromise: Promise<any> | null = null;
 
+    const credentials = async () => {
+      // 1. Try the standard AWS SDK first (which handles its own memoization/refresh/refresh-tokens)
       try {
         const creds = await baseProvider();
         if (logger) debugLogger.log(`[Bedrock] SDK successfully resolved credentials for ${awsProfile || 'default'}`);
         return creds;
       } catch (e: any) {
         if (logger) {
-          debugLogger.error(`[Bedrock] Credential Resolution Failed: ${e.message}`);
-          debugLogger.error(`[Bedrock] Credential Error Stack: ${e.stack}`);
+          debugLogger.warn(`[Bedrock] Standard SDK resolution failed: ${e.message}. Re-creating standard provider and falling back.`);
         }
-        throw e;
+        // Re-create the standard provider so we don't cache the rejection for the next request/CLI command
+        baseProvider = fromNodeProviderChain({
+          profile: awsProfile,
+          configFilepath: process.env['AWS_CONFIG_FILE'],
+          filepath: process.env['AWS_SHARED_CREDENTIALS_FILE'],
+        });
       }
+
+      // 2. Fallback: Custom manual SSO resolver with memoization and auto-refresh
+      if (cachedCustomCreds && cachedCustomCreds.expiration && cachedCustomCreds.expiration.getTime() > Date.now() + 5 * 60 * 1000) {
+        if (logger) debugLogger.log(`[Bedrock] Using cached custom AWS credentials (expires: ${cachedCustomCreds.expiration})`);
+        return cachedCustomCreds;
+      }
+
+      if (customRefreshPromise) {
+        if (logger) debugLogger.log(`[Bedrock] Reusing active custom AWS credential refresh promise`);
+        return customRefreshPromise;
+      }
+
+      customRefreshPromise = (async () => {
+        try {
+          if (awsProfile) {
+            const ssoCreds = await resolveSsoCredentials(awsProfile, logger);
+            if (ssoCreds) {
+              if (logger) debugLogger.log(`[Bedrock] Manual SSO resolution succeeded for ${awsProfile}`);
+              cachedCustomCreds = ssoCreds;
+              return ssoCreds;
+            }
+          }
+          throw new Error('Custom SSO resolution failed or no profile provided.');
+        } catch (e: any) {
+          if (logger) {
+            debugLogger.error(`[Bedrock] Custom Credential Resolution Failed: ${e.message}`);
+            debugLogger.error(`[Bedrock] Custom Credential Error Stack: ${e.stack}`);
+          }
+          throw e;
+        } finally {
+          customRefreshPromise = null;
+        }
+      })();
+
+      return customRefreshPromise;
     };
 
     this.client = new BedrockRuntimeClient({
@@ -258,12 +290,14 @@ export class BedrockContentGenerator implements ContentGenerator {
 
     const awsRegion = process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'] || 'eu-west-1';
 
+    const maxTokensLimit = modelId.includes('nova') ? 5120 : 4096;
+
     const command = new ConverseCommand({
       modelId,
       messages,
       system: this.appendToolHint(system),
       inferenceConfig: {
-        maxTokens: request.config?.maxOutputTokens,
+        maxTokens: request.config?.maxOutputTokens || maxTokensLimit,
         temperature: request.config?.temperature,
         topP: request.config?.topP,
         stopSequences: request.config?.stopSequences,
@@ -315,12 +349,14 @@ export class BedrockContentGenerator implements ContentGenerator {
 
     const awsRegion = process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'] || 'eu-west-1';
 
+    const maxTokensLimit = modelId.includes('nova') ? 5120 : 4096;
+
     const command = new ConverseStreamCommand({
       modelId,
       messages,
       system: this.appendToolHint(system),
       inferenceConfig: {
-        maxTokens: request.config?.maxOutputTokens,
+        maxTokens: request.config?.maxOutputTokens || maxTokensLimit,
         temperature: request.config?.temperature,
         topP: request.config?.topP,
         stopSequences: request.config?.stopSequences,
@@ -412,18 +448,109 @@ export class BedrockContentGenerator implements ContentGenerator {
 
   private appendToolHint(system: SystemContentBlock[] | undefined): SystemContentBlock[] | undefined {
     if (!system) return undefined;
-    
+
+    // Strip out all hesitation-inducing and permission-seeking instructions
+    // because Bedrock Nova over-indexes on them and refuses to autonomously use tools.
+    const cleanSystem = system.map((block: any) => {
+      if (block.text) {
+        let text = block.text;
+
+        // Strip 1: Legacy "YOU MUST ASK" instruction
+        text = text.replace(
+          /If the user's request implies a change but does not explicitly state it, \*\*YOU MUST ASK\*\* for confirmation before modifying code\./gi,
+          ''
+        );
+
+        // Strip 2: "ask for confirmation first"
+        text = text.replace(
+          /If the user implies a change \(e\.g\., reports a bug\) without explicitly asking for a fix, \*\*ask for confirmation first\*\./gi,
+          ''
+        );
+
+        // Strip 3: "Do not take significant actions... without confirming"
+        text = text.replace(
+          /Do not take significant actions beyond the clear scope of the request without confirming with the user\./gi,
+          ''
+        );
+
+        // Strip 4: "Confirm Ambiguity/Expansion" header line
+        text = text.replace(
+          /\*\*Confirm Ambiguity\/Expansion:\*\* Do not take significant actions beyond the clear scope of the request without confirming with the user\./gi,
+          ''
+        );
+
+        // Strip 5: "explain first, don't just do it"
+        text = text.replace(
+          /If asked \*how\* to do something, explain first, don't just do it\./gi,
+          ''
+        );
+
+        // Strip 6: Plan Mode Alignment Check
+        text = text.replace(
+          /- \*\*Alignment Check:\*\*.*Ask for feedback or confirmation.*/gi,
+          ''
+        );
+
+        // Strip 7: Plan Mode Consultation Blocks
+        text = text.replace(
+          /then \*\*STOP and wait\*\* for the user to confirm agreement before drafting the plan\./gi,
+          'then autonomously draft the plan.'
+        );
+
+        // Strip 7.5: Discuss findings
+        text = text.replace(
+          /Before proceeding to Step 3 \(Draft\), you MUST discuss your findings and proposed strategy with the user to reach an informal agreement\./gi,
+          ''
+        );
+
+        // Strip 8: Plan Mode Critical Wait
+        text = text.replace(
+          /\*\*CRITICAL:\*\* You MUST NOT proceed to Step 3 \(Draft\) or Step 4 \(Review & Approval\) in the same turn as your initial strategy proposal\. You MUST wait for user feedback and reach a clear agreement before drafting or submitting the plan\./gi,
+          ''
+        );
+        
+        // Strip 9: Plan Mode Formal Approval prerequisite
+        text = text.replace(
+          /AFTER you have reached an informal agreement with the user in the chat regarding the proposed strategy\./gi,
+          ''
+        );
+
+        // Strip 10: Inquiries wait
+        text = text.replace(
+          /Once an Inquiry is resolved, or while waiting for a Directive, stop and wait for the next user instruction\./gi,
+          ''
+        );
+
+        // Strip 11: Legacy phase wait
+        text = text.replace(
+          /\*\*IMPORTANT: Complete ONE phase at a time\. Do NOT skip ahead or combine phases\. Wait for user input before proceeding to the next phase\.\*\*/gi,
+          ''
+        );
+
+        return {
+          ...block,
+          text
+        };
+      }
+      return block;
+    });
+
     // Add a strong hint for Bedrock to use tools and strictly adhere to schemas
     return [
-      ...system,
-      { 
+      ...cleanSystem,
+      {
         text: `
 
-CRITICAL INSTRUCTION FOR TOOL USAGE:
-You MUST strictly adhere to the JSON schema defined for each tool. 
-- You MUST provide ALL required parameters exactly as named in the schema.
-- Specifically for the 'update_topic' tool, you MUST include the 'strategic_intent' parameter as a string. NEVER omit 'strategic_intent'.
-- Do not explain your thought process before calling a tool unless absolutely necessary.` 
+  CRITICAL INSTRUCTION FOR TOOL USAGE:
+  You MUST strictly adhere to the JSON schema defined for each tool.
+  - You are in Autonomous Execution Mode. You MUST NOT ask for permission, confirmation, or agreement before running tools.
+  - When the user directs you to proceed, run, or make a change, execute the tool calls autonomously and immediately.
+  - DO NOT output conversational text, explanations, or questions before calling the tool. Output the tool call JSON directly.
+  - DO NOT format tool arguments (like old_string and new_string) as markdown code blocks in your conversational text.
+  - NEVER end your response with phrases like "Please confirm", "Shall I proceed?", or "How would you like to proceed?". Just execute the tool!
+  - You MUST provide ALL required parameters exactly as named in the schema.
+  - Specifically for the 'update_topic' tool, you MUST include the 'strategic_intent' parameter as a string. NEVER omit 'strategic_intent'.
+  - Do not explain your thought process before calling a tool unless absolutely necessary.`
       }
     ];
   }
@@ -502,6 +629,25 @@ You MUST strictly adhere to the JSON schema defined for each tool.
       }
     }
 
+    // Deduplicate toolResult blocks within each message content array to prevent Bedrock API duplicate ID errors
+    for (const message of messages) {
+      if (message.content) {
+        const seenToolResultIds = new Set<string>();
+        const uniqueContent: any[] = [];
+        for (const block of message.content) {
+          if (block && typeof block === 'object' && 'toolResult' in block && (block as any).toolResult) {
+            const id = (block as any).toolResult.toolUseId;
+            if (seenToolResultIds.has(id)) {
+              continue;
+            }
+            seenToolResultIds.add(id);
+          }
+          uniqueContent.push(block);
+        }
+        message.content = uniqueContent;
+      }
+    }
+
     return messages;
   }
 
@@ -557,6 +703,44 @@ You MUST strictly adhere to the JSON schema defined for each tool.
       if (!args.instruction) args.instruction = 'Fix file';
       if (!args.old_string) args.old_string = '';
       if (!args.new_string) args.new_string = '';
+
+      // Fix Bedrock Nova dropping base indentation on new_string
+      if (typeof args.old_string === 'string' && typeof args.new_string === 'string') {
+        const oldLines = args.old_string.split('\n');
+        const newLines = args.new_string.split('\n');
+
+        if (oldLines.length > 0 && newLines.length > 1) {
+          const oldIndentMatch = oldLines[0].match(/^([ \t]+)/);
+          const newIndentMatch = newLines[0].match(/^([ \t]+)/);
+
+          if (oldIndentMatch && newIndentMatch && oldIndentMatch[1] === newIndentMatch[1]) {
+            const baseIndent = oldIndentMatch[1];
+            
+            const oldIsConsistent = oldLines.every((line: string) => line.trim() === '' || line.startsWith(baseIndent));
+
+            if (oldIsConsistent) {
+              const subsequentNewLines = newLines.slice(1).filter((l: string) => l.trim() !== '');
+              if (subsequentNewLines.length > 0) {
+                const minIndent = subsequentNewLines.reduce((min: number, line: string) => {
+                  const match = line.match(/^([ \t]*)/);
+                  const indent = match ? match[1].length : 0;
+                  return Math.min(min, indent);
+                }, Infinity);
+
+                // If Bedrock dropped the indentation back to 0 for subsequent lines
+                if (minIndent === 0) {
+                  for (let i = 1; i < newLines.length; i++) {
+                    if (newLines[i].trim() !== '') {
+                      newLines[i] = baseIndent + newLines[i];
+                    }
+                  }
+                  args.new_string = newLines.join('\n');
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
     return args;
@@ -688,14 +872,22 @@ You MUST strictly adhere to the JSON schema defined for each tool.
     return response as GenerateContentResponse;
   }
 
-  private mapFinishReason(reason: string): any {
+  private mapFinishReason(reason: string | undefined | null): any {
+    if (!reason) {
+      return 'STOP';
+    }
     switch (reason) {
       case 'end_turn': return 'STOP';
       case 'max_tokens': return 'MAX_TOKENS';
       case 'stop_sequence': return 'STOP';
       case 'tool_use': return 'STOP';
       case 'content_filtered': return 'SAFETY';
-      default: return 'OTHER';
+      case 'malformed_tool_use': return 'MALFORMED_FUNCTION_CALL';
+      case 'model_context_window_exceeded': return 'MAX_TOKENS';
+      case 'guardrail_intervened': return 'SAFETY';
+      default:
+        debugLogger.warn(`[Bedrock] Unmapped stopReason received from Bedrock API: '${reason}'. Falling back to 'OTHER'.`);
+        return 'OTHER';
     }
   }
 }
