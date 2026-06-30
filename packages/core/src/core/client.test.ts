@@ -14,7 +14,12 @@ import {
   type Mock,
 } from 'vitest';
 
-import type { Content, GenerateContentResponse, Part } from '@google/genai';
+import {
+  FinishReason,
+  type Content,
+  type GenerateContentResponse,
+  type Part,
+} from '@google/genai';
 import { GeminiClient } from './client.js';
 import {
   AuthType,
@@ -23,7 +28,6 @@ import {
 } from './contentGenerator.js';
 import { GeminiChat } from './geminiChat.js';
 import type { Config } from '../config/config.js';
-import type { AgentLoopContext } from '../config/agent-loop-context.js';
 import {
   CompressionStatus,
   GeminiEventType,
@@ -249,9 +253,7 @@ describe('Gemini Client (client.ts)', () => {
       getGeminiClient: vi.fn(),
       getRetryFetchErrors: vi.fn().mockReturnValue(true),
       getMaxAttempts: vi.fn().mockReturnValue(3),
-      getModelRouterService: vi
-        .fn()
-        .mockReturnValue(mockRouterService as unknown as ModelRouterService),
+      getModelRouterService: vi.fn().mockReturnValue(mockRouterService),
       getMessageBus: vi.fn().mockReturnValue(undefined),
       getEnableHooks: vi.fn().mockReturnValue(false),
       getChatCompression: vi.fn().mockReturnValue(undefined),
@@ -308,7 +310,7 @@ describe('Gemini Client (client.ts)', () => {
     (mockConfig as unknown as { config: Config; promptId: string }).promptId =
       'test-prompt-id';
 
-    client = new GeminiClient(mockConfig as unknown as AgentLoopContext);
+    client = new GeminiClient(mockConfig);
     await client.initialize();
     vi.mocked(mockConfig.getGeminiClient).mockReturnValue(client);
     (mockConfig as unknown as { geminiClient: GeminiClient }).geminiClient =
@@ -494,9 +496,7 @@ describe('Gemini Client (client.ts)', () => {
         getLastPromptTokenCount: vi.fn().mockReturnValue(newTokenCount),
       };
 
-      client['startChat'] = vi
-        .fn()
-        .mockResolvedValue(mockNewChat as GeminiChat);
+      client['startChat'] = vi.fn().mockResolvedValue(mockNewChat);
 
       return {
         client,
@@ -570,46 +570,49 @@ describe('Gemini Client (client.ts)', () => {
         expect(client['chat']).toBe(mockOriginalChat);
       });
 
-      it.skip('will not attempt to compress context after a failure', async () => {
-        const { client } = setup({
-          originalTokenCount: 100,
-          newTokenCount: 200,
-          compressionStatus:
-            CompressionStatus.COMPRESSION_FAILED_INFLATED_TOKEN_COUNT,
-        });
+      it.todo(
+        'will not attempt to compress context after a failure',
+        async () => {
+          const { client } = setup({
+            originalTokenCount: 100,
+            newTokenCount: 200,
+            compressionStatus:
+              CompressionStatus.COMPRESSION_FAILED_INFLATED_TOKEN_COUNT,
+          });
 
-        await client.tryCompressChat('prompt-id-4', false); // This fails and sets hasFailedCompressionAttempt = true
+          await client.tryCompressChat('prompt-id-4', false); // This fails and sets hasFailedCompressionAttempt = true
 
-        // Mock the next call to return NOOP
-        vi.mocked(
-          ChatCompressionService.prototype.compress,
-        ).mockResolvedValueOnce({
-          newHistory: null,
-          info: {
-            originalTokenCount: 0,
-            newTokenCount: 0,
-            compressionStatus: CompressionStatus.NOOP,
-          },
-        });
+          // Mock the next call to return NOOP
+          vi.mocked(
+            ChatCompressionService.prototype.compress,
+          ).mockResolvedValueOnce({
+            newHistory: null,
+            info: {
+              originalTokenCount: 0,
+              newTokenCount: 0,
+              compressionStatus: CompressionStatus.NOOP,
+            },
+          });
 
-        // This call should now be a NOOP
-        const result = await client.tryCompressChat('prompt-id-5', false);
+          // This call should now be a NOOP
+          const result = await client.tryCompressChat('prompt-id-5', false);
 
-        expect(result.compressionStatus).toBe(CompressionStatus.NOOP);
-        expect(ChatCompressionService.prototype.compress).toHaveBeenCalledTimes(
-          2,
-        );
-        expect(
-          ChatCompressionService.prototype.compress,
-        ).toHaveBeenLastCalledWith(
-          expect.anything(),
-          'prompt-id-5',
-          false,
-          expect.anything(),
-          expect.anything(),
-          true, // hasFailedCompressionAttempt
-        );
-      });
+          expect(result.compressionStatus).toBe(CompressionStatus.NOOP);
+          expect(
+            ChatCompressionService.prototype.compress,
+          ).toHaveBeenCalledTimes(2);
+          expect(
+            ChatCompressionService.prototype.compress,
+          ).toHaveBeenLastCalledWith(
+            expect.anything(),
+            'prompt-id-5',
+            false,
+            expect.anything(),
+            expect.anything(),
+            true, // hasFailedCompressionAttempt
+          );
+        },
+      );
     });
     it('should correctly latch hasFailedCompressionAttempt flag', async () => {
       // 1. Setup: Call setup() from this test file
@@ -1302,11 +1305,216 @@ ${JSON.stringify(
       expect(finalResult).toBeInstanceOf(Turn);
     });
 
+    it('should use the Bedrock-safe next speaker checker model override', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        this.getResponseText.mockReturnValue('Done.');
+        yield { type: GeminiEventType.Content, value: 'Done.' };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-checker',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(mockCheckNextSpeaker).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        'prompt-id-bedrock-checker',
+        expect.objectContaining({
+          authType: AuthType.BEDROCK,
+          modelOverride: 'bedrock-next-speaker-checker',
+          resolvedModel: 'bedrock-next-speaker-checker',
+        }),
+      );
+    });
+
+    it('should auto-continue once for incomplete Bedrock assistant turns when nextSpeaker check fails', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        const response =
+          callCount === 1
+            ? "I'll now adjust the code to place the error handling block in the correct location:"
+            : 'Applied the change.';
+        (this as unknown as Turn).finishReason = FinishReason.OTHER;
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const events: ServerGeminiStreamEvent[] = [];
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-fallback',
+      );
+      while (true) {
+        const result = await stream.next();
+        if (result.done) {
+          break;
+        }
+        events.push(result.value);
+      }
+
+      expect(callCount).toBe(2);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: GeminiEventType.Content,
+            value:
+              "I'll now adjust the code to place the error handling block in the correct location:",
+          }),
+          expect.objectContaining({
+            type: GeminiEventType.Content,
+            value: 'Applied the change.',
+          }),
+        ]),
+      );
+    });
+
+    it('should not auto-continue Bedrock fallback for assistant questions', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        const response = 'How would you like to proceed?';
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-question',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(callCount).toBe(1);
+    });
+
+    it('should not auto-continue Bedrock fallback when pending tool calls exist', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        (this as unknown as { pendingToolCalls: unknown[] }).pendingToolCalls =
+          [{ id: 'tool-call-1' }];
+        const response = 'I will now use the tool:';
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-tool-pending',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(callCount).toBe(1);
+    });
+
+    it('should not auto-continue for non-Bedrock backends when nextSpeaker check fails', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.USE_GEMINI,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        const response = 'I will now do the thing:';
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-gemini-no-fallback',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(callCount).toBe(1);
+    });
+
     it('should stop infinite loop after MAX_TURNS when nextSpeaker always returns model', async () => {
       // Get the mocked checkNextSpeaker function and configure it to trigger infinite loop
-      const { checkNextSpeaker } = await import(
-        '../utils/nextSpeakerChecker.js'
-      );
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
       const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
       mockCheckNextSpeaker.mockResolvedValue({
         next_speaker: 'model',
@@ -1428,9 +1636,8 @@ ${JSON.stringify(
       // someone tries to bypass it by calling with a very large turns value
 
       // Get the mocked checkNextSpeaker function and configure it to trigger infinite loop
-      const { checkNextSpeaker } = await import(
-        '../utils/nextSpeakerChecker.js'
-      );
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
       const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
       mockCheckNextSpeaker.mockResolvedValue({
         next_speaker: 'model',
@@ -2268,24 +2475,24 @@ ${JSON.stringify(
           }
 
           const mockChat = client['chat'] as unknown as {
-            addHistory: (typeof vi)['fn'];
+            addHistory: Mock;
           };
 
-          if (shouldSendContext) {
-            expect(mockChat.addHistory).toHaveBeenCalledWith(
+          const calls = mockChat.addHistory.mock.calls;
+          expect(calls.length).toBe(shouldSendContext ? 1 : 0);
+          const firstCallArg = calls[0]?.[0];
+          const expectedMatcher = expect.objectContaining({
+            parts: expect.arrayContaining([
               expect.objectContaining({
-                parts: expect.arrayContaining([
-                  expect.objectContaining({
-                    text: expect.stringContaining(
-                      "Here is a summary of changes in the user's editor context",
-                    ),
-                  }),
-                ]),
+                text: expect.stringContaining(
+                  "Here is a summary of changes in the user's editor context",
+                ),
               }),
-            );
-          } else {
-            expect(mockChat.addHistory).not.toHaveBeenCalled();
-          }
+            ]),
+          });
+          expect(firstCallArg).toEqual(
+            shouldSendContext ? expectedMatcher : undefined,
+          );
         },
       );
 
@@ -2818,9 +3025,8 @@ ${JSON.stringify(
 
     it('should not call checkNextSpeaker when turn.run() yields an error', async () => {
       // Arrange
-      const { checkNextSpeaker } = await import(
-        '../utils/nextSpeakerChecker.js'
-      );
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
       const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
 
       const mockStream = (async function* () {
@@ -2855,9 +3061,8 @@ ${JSON.stringify(
 
     it('should not call checkNextSpeaker when turn.run() yields a value then an error', async () => {
       // Arrange
-      const { checkNextSpeaker } = await import(
-        '../utils/nextSpeakerChecker.js'
-      );
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
       const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
 
       const mockStream = (async function* () {
@@ -3235,9 +3440,8 @@ ${JSON.stringify(
       });
 
       it('should fire BeforeAgent once and AfterAgent once even with recursion', async () => {
-        const { checkNextSpeaker } = await import(
-          '../utils/nextSpeakerChecker.js'
-        );
+        const { checkNextSpeaker } =
+          await import('../utils/nextSpeakerChecker.js');
         vi.mocked(checkNextSpeaker)
           .mockResolvedValueOnce({ next_speaker: 'model', reasoning: 'more' })
           .mockResolvedValueOnce(null);
@@ -3276,9 +3480,8 @@ ${JSON.stringify(
       });
 
       it('should use original request in AfterAgent hook even when continuation happened', async () => {
-        const { checkNextSpeaker } = await import(
-          '../utils/nextSpeakerChecker.js'
-        );
+        const { checkNextSpeaker } =
+          await import('../utils/nextSpeakerChecker.js');
         vi.mocked(checkNextSpeaker)
           .mockResolvedValueOnce({ next_speaker: 'model', reasoning: 'more' })
           .mockResolvedValueOnce(null);

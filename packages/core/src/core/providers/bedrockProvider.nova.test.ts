@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BedrockContentGenerator } from './bedrockProvider.js';
 import type { GenerateContentResponse } from '@google/genai';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { debugLogger } from '../../utils/debugLogger.js';
 
 // Mock the AWS SDK and credential providers
 vi.mock('@aws-sdk/client-bedrock-runtime', () => {
@@ -39,7 +40,7 @@ describe('BedrockContentGenerator (Nova Support)', () => {
       expect(fromNodeProviderChain).toHaveBeenCalledWith(
         expect.objectContaining({
           profile: 'my-profile',
-        })
+        }),
       );
     });
   });
@@ -49,7 +50,8 @@ describe('BedrockContentGenerator (Nova Support)', () => {
       const mockBaseProvider = vi.fn();
       vi.mocked(fromNodeProviderChain).mockReturnValue(mockBaseProvider);
 
-      const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime');
+      const { BedrockRuntimeClient } =
+        await import('@aws-sdk/client-bedrock-runtime');
       vi.mocked(BedrockRuntimeClient).mockClear();
 
       const uniqueProfile = `test-profile-${Math.random()}`;
@@ -82,7 +84,8 @@ describe('BedrockContentGenerator (Nova Support)', () => {
       const mockBaseProvider = vi.fn();
       vi.mocked(fromNodeProviderChain).mockReturnValue(mockBaseProvider);
 
-      const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime');
+      const { BedrockRuntimeClient } =
+        await import('@aws-sdk/client-bedrock-runtime');
       vi.mocked(BedrockRuntimeClient).mockClear();
 
       const uniqueProfile = `test-profile-${Math.random()}`;
@@ -112,7 +115,11 @@ describe('BedrockContentGenerator (Nova Support)', () => {
   describe('mapContentsToMessages', () => {
     it('should map user message correctly', () => {
       const contents = [{ role: 'user', parts: [{ text: 'Hello' }] }];
-      const messages = (generator as unknown as { mapContentsToMessages: (c: any, t: boolean) => any }).mapContentsToMessages(contents, true);
+      const messages = (
+        generator as unknown as {
+          mapContentsToMessages: (c: any, t: boolean) => any;
+        }
+      ).mapContentsToMessages(contents, true);
       expect(messages).toEqual([
         { role: 'user', content: [{ text: 'Hello' }] },
       ]);
@@ -147,7 +154,11 @@ describe('BedrockContentGenerator (Nova Support)', () => {
         },
       ];
 
-      const messages = (generator as unknown as { mapContentsToMessages: (c: any, t: boolean) => any }).mapContentsToMessages(contents, true);
+      const messages = (
+        generator as unknown as {
+          mapContentsToMessages: (c: any, t: boolean) => any;
+        }
+      ).mapContentsToMessages(contents, true);
 
       expect(messages).toHaveLength(3);
       // Assistant turn with tool use
@@ -201,7 +212,11 @@ describe('BedrockContentGenerator (Nova Support)', () => {
         },
       ];
 
-      const messages = (generator as unknown as { mapContentsToMessages: (c: any, t: boolean) => any }).mapContentsToMessages(contents, true);
+      const messages = (
+        generator as unknown as {
+          mapContentsToMessages: (c: any, t: boolean) => any;
+        }
+      ).mapContentsToMessages(contents, true);
 
       expect(messages).toHaveLength(1);
       expect(messages[0].content).toHaveLength(1);
@@ -227,7 +242,9 @@ describe('BedrockContentGenerator (Nova Support)', () => {
         stopReason: 'end_turn',
       };
 
-      const response = (generator as unknown as { mapResponse: (r: any) => any }).mapResponse(bedrockResponse);
+      const response = (
+        generator as unknown as { mapResponse: (r: any) => any }
+      ).mapResponse(bedrockResponse);
       expect(response).toEqual({
         candidates: [
           {
@@ -265,7 +282,9 @@ describe('BedrockContentGenerator (Nova Support)', () => {
         stopReason: 'tool_use',
       };
 
-      const response = (generator as unknown as { mapResponse: (r: any) => any }).mapResponse(bedrockResponse);
+      const response = (
+        generator as unknown as { mapResponse: (r: any) => any }
+      ).mapResponse(bedrockResponse);
       expect((response.candidates as any)[0].content.parts[0]).toEqual({
         functionCall: {
           name: 'get_weather',
@@ -281,9 +300,24 @@ describe('BedrockContentGenerator (Nova Support)', () => {
       const mockStream = {
         [Symbol.asyncIterator]: async function* () {
           yield { messageStart: { role: 'assistant' } };
-          yield { contentBlockStart: { start: { toolUse: { toolUseId: 'tool_456', name: 'search' } }, contentBlockIndex: 0 } };
-          yield { contentBlockDelta: { delta: { toolUse: { input: '{"que' } }, contentBlockIndex: 0 } };
-          yield { contentBlockDelta: { delta: { toolUse: { input: 'ry": "foo"}' } }, contentBlockIndex: 0 } };
+          yield {
+            contentBlockStart: {
+              start: { toolUse: { toolUseId: 'tool_456', name: 'search' } },
+              contentBlockIndex: 0,
+            },
+          };
+          yield {
+            contentBlockDelta: {
+              delta: { toolUse: { input: '{"que' } },
+              contentBlockIndex: 0,
+            },
+          };
+          yield {
+            contentBlockDelta: {
+              delta: { toolUse: { input: 'ry": "foo"}' } },
+              contentBlockIndex: 0,
+            },
+          };
           yield { contentBlockStop: { contentBlockIndex: 0 } };
           yield { messageStop: { stopReason: 'tool_use' } };
         },
@@ -291,10 +325,14 @@ describe('BedrockContentGenerator (Nova Support)', () => {
 
       mockClient.send.mockResolvedValue({ stream: mockStream });
 
-      const streamResult = await generator.generateContentStream({
-        model: 'bedrock/us.amazon.nova-lite-v1:0',
-        contents: [{ role: 'user', parts: [{ text: 'Search for foo' }] }],
-      } as any, 'prompt-123', 'user' as any);
+      const streamResult = await generator.generateContentStream(
+        {
+          model: 'bedrock/us.amazon.nova-lite-v1:0',
+          contents: [{ role: 'user', parts: [{ text: 'Search for foo' }] }],
+        } as any,
+        'prompt-123',
+        'user' as any,
+      );
 
       const chunks: GenerateContentResponse[] = [];
       for await (const chunk of streamResult) {
@@ -311,6 +349,49 @@ describe('BedrockContentGenerator (Nova Support)', () => {
         },
       });
       expect((chunks[1].candidates as any)[0].finishReason).toBe('STOP');
+    });
+
+    it('should log raw unmapped Bedrock stop reasons before mapping to OTHER', async () => {
+      const debugSpy = vi
+        .spyOn(debugLogger, 'debug')
+        .mockImplementation(() => {});
+      const warnSpy = vi
+        .spyOn(debugLogger, 'warn')
+        .mockImplementation(() => {});
+
+      const mockStream = {
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            contentBlockDelta: { delta: { text: 'I will now do the thing:' } },
+          };
+          yield { messageStop: { stopReason: 'mystery_reason' } };
+        },
+      };
+
+      mockClient.send.mockResolvedValue({ stream: mockStream });
+
+      const streamResult = await generator.generateContentStream(
+        {
+          model: 'bedrock/us.amazon.nova-lite-v1:0',
+          contents: [{ role: 'user', parts: [{ text: 'Proceed' }] }],
+        } as any,
+        'prompt-456',
+        'user' as any,
+      );
+
+      const chunks: GenerateContentResponse[] = [];
+      for await (const chunk of streamResult) {
+        chunks.push(chunk);
+      }
+
+      expect((chunks[1].candidates as any)[0].finishReason).toBe('OTHER');
+      expect(debugSpy).toHaveBeenCalledWith(
+        '[Bedrock Stream] messageStop',
+        expect.stringContaining('"stopReason":"mystery_reason"'),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[Bedrock] Unmapped stopReason received from Bedrock API: 'mystery_reason'. Falling back to 'OTHER'.",
+      );
     });
   });
 });

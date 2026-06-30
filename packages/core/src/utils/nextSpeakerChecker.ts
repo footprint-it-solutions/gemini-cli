@@ -6,9 +6,10 @@
 
 import type { Content } from '@google/genai';
 import type { BaseLlmClient } from '../core/baseLlmClient.js';
+import { AuthType } from '../core/contentGenerator.js';
 import type { GeminiChat } from '../core/geminiChat.js';
-import { isFunctionResponse } from './messageInspectors.js';
 import { debugLogger } from './debugLogger.js';
+import { isFunctionResponse } from './messageInspectors.js';
 import { LlmRole } from '../telemetry/types.js';
 
 const CHECK_PROMPT = `Analyze *only* the content and structure of your immediately preceding response (your last turn in the conversation history). Based *strictly* on that response, determine who should logically speak next: the 'user' or the 'model' (you).
@@ -35,9 +36,32 @@ const RESPONSE_SCHEMA: Record<string, unknown> = {
   required: ['reasoning', 'next_speaker'],
 };
 
+const DEFAULT_CHECKER_MODEL = 'next-speaker-checker';
+const BEDROCK_CHECKER_MODEL = 'bedrock-next-speaker-checker';
+
 export interface NextSpeakerResponse {
   reasoning: string;
   next_speaker: 'user' | 'model';
+}
+
+export interface NextSpeakerCheckOptions {
+  authType?: string;
+  modelOverride?: string;
+  resolvedModel?: string;
+}
+
+function summarizeAssistantText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+
+function resolveCheckerModel(options?: NextSpeakerCheckOptions): string {
+  if (options?.modelOverride) {
+    return options.modelOverride;
+  }
+  if (options?.authType === AuthType.BEDROCK) {
+    return BEDROCK_CHECKER_MODEL;
+  }
+  return DEFAULT_CHECKER_MODEL;
 }
 
 export async function checkNextSpeaker(
@@ -45,6 +69,7 @@ export async function checkNextSpeaker(
   baseLlmClient: BaseLlmClient,
   abortSignal: AbortSignal,
   promptId: string,
+  options?: NextSpeakerCheckOptions,
 ): Promise<NextSpeakerResponse | null> {
   // We need to capture the curated history because there are many moments when the model will return invalid turns
   // that when passed back up to the endpoint will break subsequent calls. An example of this is when the model decides
@@ -103,6 +128,13 @@ export async function checkNextSpeaker(
     return null;
   }
 
+  const lastAssistantText = summarizeAssistantText(
+    lastMessage.parts?.map((part) => part.text || '').join(' ') || '',
+  );
+  const checkerModel = resolveCheckerModel(options);
+  const resolvedModel = options?.resolvedModel || checkerModel;
+  const authType = options?.authType || 'unknown';
+
   const contents: Content[] = [
     ...curatedHistory,
     { role: 'user', parts: [{ text: CHECK_PROMPT }] },
@@ -111,7 +143,7 @@ export async function checkNextSpeaker(
   try {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     const parsedResponse = (await baseLlmClient.generateJson({
-      modelConfigKey: { model: 'next-speaker-checker' },
+      modelConfigKey: { model: checkerModel },
       contents,
       schema: RESPONSE_SCHEMA,
       abortSignal,
@@ -124,13 +156,44 @@ export async function checkNextSpeaker(
       parsedResponse.next_speaker &&
       ['user', 'model'].includes(parsedResponse.next_speaker)
     ) {
+      debugLogger.debug(
+        '[NextSpeakerChecker] completed',
+        JSON.stringify({
+          promptId,
+          authType,
+          checkerModel,
+          resolvedModel,
+          nextSpeaker: parsedResponse.next_speaker,
+          lastAssistantText,
+        }),
+      );
       return parsedResponse;
     }
+
+    debugLogger.warn(
+      '[NextSpeakerChecker] invalid response',
+      JSON.stringify({
+        promptId,
+        authType,
+        checkerModel,
+        resolvedModel,
+        lastAssistantText,
+        parsedResponse,
+      }),
+    );
     return null;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     debugLogger.warn(
-      'Failed to talk to Gemini endpoint when seeing if conversation should continue.',
-      error,
+      '[NextSpeakerChecker] execution failed',
+      JSON.stringify({
+        promptId,
+        authType,
+        checkerModel,
+        resolvedModel,
+        lastAssistantText,
+        error: message,
+      }),
     );
     return null;
   }

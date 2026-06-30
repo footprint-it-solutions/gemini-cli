@@ -41,7 +41,7 @@ import type {
   ChatRecordingService,
   ResumedSessionData,
 } from '../services/chatRecordingService.js';
-import type { ContentGenerator } from './contentGenerator.js';
+import { AuthType, type ContentGenerator } from './contentGenerator.js';
 import { LoopDetectionService } from '../services/loopDetectionService.js';
 import { ChatCompressionService } from '../context/chatCompressionService.js';
 import { AgentHistoryProvider } from '../context/agentHistoryProvider.js';
@@ -49,10 +49,7 @@ import type { ContextManager } from '../context/contextManager.js';
 import type { HistoryTurn } from './agentChatHistory.js';
 import { ideContextStore } from '../ide/ideContext.js';
 import { logNextSpeakerCheck } from '../telemetry/loggers.js';
-import type {
-  DefaultHookOutput,
-  AfterAgentHookOutput,
-} from '../hooks/types.js';
+import type { DefaultHookOutput } from '../hooks/types.js';
 import { NextSpeakerCheckEvent, LlmRole } from '../telemetry/types.js';
 import { uiTelemetryService } from '../telemetry/uiTelemetry.js';
 import type { IdeContext, File } from '../ide/types.js';
@@ -145,6 +142,49 @@ export class GeminiClient {
       this.updateSystemInstruction();
     }
   };
+
+  private getNextSpeakerCheckerConfig(): {
+    authType?: string;
+    modelOverride: string;
+    resolvedModel: string;
+  } {
+    const authType = this.config.getContentGeneratorConfig()?.authType;
+    const modelOverride =
+      authType === AuthType.BEDROCK
+        ? 'bedrock-next-speaker-checker'
+        : 'next-speaker-checker';
+    const resolvedModel = this.config.modelConfigService.getResolvedConfig({
+      model: modelOverride,
+    }).model;
+    return { authType, modelOverride, resolvedModel };
+  }
+
+  private isBedrockAuth(): boolean {
+    return (
+      this.config.getContentGeneratorConfig()?.authType === AuthType.BEDROCK
+    );
+  }
+
+  private shouldFallbackContinueBedrockTurn(responseText: string): boolean {
+    const normalized = responseText.replace(/\s+/g, ' ').trim();
+    if (!normalized) {
+      return false;
+    }
+    if (/[?؟]$/.test(normalized)) {
+      return false;
+    }
+    const lower = normalized.toLowerCase();
+    const continuationPatterns = [
+      /:$/,
+      /\bi will now\b/,
+      /\bi'll now\b/,
+      /\blet me\b/,
+      /\blet's proceed\b/,
+      /\bnext,? i'll\b/,
+      /\bi(?:'|’)m going to\b/,
+    ];
+    return continuationPatterns.some((pattern) => pattern.test(lower));
+  }
 
   clearCurrentSequenceModel(): void {
     this.currentSequenceModel = null;
@@ -617,6 +657,8 @@ export class GeminiClient {
     prompt_id: string,
     boundedTurns: number,
     displayContent?: PartListUnion,
+    stopHookActive: boolean = false,
+    bedrockFallbackContinuationUsed: boolean = false,
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
     // Re-initialize turn (it was empty before if in loop, or new instance)
     let turn = new Turn(this.getChat(), prompt_id);
@@ -877,11 +919,13 @@ export class GeminiClient {
         !this.config.getQuotaErrorOccurred() &&
         !this.config.getSkipNextSpeakerCheck()
       ) {
+        const checkerConfig = this.getNextSpeakerCheckerConfig();
         const nextSpeakerCheck = await checkNextSpeaker(
           this.getChat(),
           this.config.getBaseLlmClient(),
           signal,
           prompt_id,
+          checkerConfig,
         );
         logNextSpeakerCheck(
           this.config,
@@ -899,6 +943,35 @@ export class GeminiClient {
             prompt_id,
             boundedTurns - 1,
             displayContent,
+            stopHookActive,
+            true,
+          );
+          return turn;
+        }
+
+        const responseText = turn.getResponseText() || '';
+        if (
+          this.isBedrockAuth() &&
+          !bedrockFallbackContinuationUsed &&
+          this.shouldFallbackContinueBedrockTurn(responseText)
+        ) {
+          debugLogger.warn(
+            '[GeminiClient] Bedrock fallback continuation triggered',
+            JSON.stringify({
+              promptId: prompt_id,
+              finishReason: turn.finishReason?.toString() || '',
+              responseText: responseText.slice(0, 160),
+            }),
+          );
+          const nextRequest = [{ text: 'Please continue.' }];
+          turn = yield* this.sendMessageStream(
+            nextRequest,
+            signal,
+            prompt_id,
+            boundedTurns - 1,
+            displayContent,
+            stopHookActive,
+            true,
           );
           return turn;
         }
@@ -914,6 +987,7 @@ export class GeminiClient {
     turns: number = MAX_TURNS,
     displayContent?: PartListUnion,
     stopHookActive: boolean = false,
+    bedrockFallbackContinuationUsed: boolean = false,
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
     this.config.resetTurn();
 
@@ -968,6 +1042,8 @@ export class GeminiClient {
         prompt_id,
         boundedTurns,
         displayContent,
+        stopHookActive,
+        bedrockFallbackContinuationUsed,
       );
 
       // Fire AfterAgent hook if we have a turn and no pending tools
@@ -980,7 +1056,7 @@ export class GeminiClient {
         );
 
         // Cast to AfterAgentHookOutput for access to shouldClearContext()
-        const afterAgentOutput = hookOutput as AfterAgentHookOutput | undefined;
+        const afterAgentOutput = hookOutput;
 
         if (afterAgentOutput?.shouldStopExecution()) {
           const contextCleared = afterAgentOutput.shouldClearContext();

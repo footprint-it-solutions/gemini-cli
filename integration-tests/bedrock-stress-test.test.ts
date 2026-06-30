@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { writeFileSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TestRig } from './test-helper.js';
@@ -52,7 +52,10 @@ describe('Bedrock Massive Go Stress Test', () => {
 
   beforeEach(() => {
     rig = new TestRig();
-    vi.stubEnv('AWS_CONFIG_FILE', '/home/andrew/repos/footprint-it-solutions/project-aerith/gemini-cli-custom/.aws/config');
+    vi.stubEnv(
+      'AWS_CONFIG_FILE',
+      '/home/andrew/repos/footprint-it-solutions/project-aerith/gemini-cli-custom/.aws/config',
+    );
     vi.stubEnv('AWS_PROFILE', 'Aerith-Development');
     vi.stubEnv('AWS_SDK_LOAD_CONFIG', '1');
   });
@@ -64,7 +67,8 @@ describe('Bedrock Massive Go Stress Test', () => {
 
   it('should exhaustively plan and execute refactorings across 20 Go files of 500+ lines each', async () => {
     const plansDir = '.gemini/tmp/bedrock-stress-tests/plans';
-    const testName = 'should exhaustively plan and execute refactorings across 20 Go files of 500+ lines each';
+    const testName =
+      'should exhaustively plan and execute refactorings across 20 Go files of 500+ lines each';
 
     await rig.setup(testName, {
       settings: {
@@ -72,7 +76,14 @@ describe('Bedrock Massive Go Stress Test', () => {
           name: 'bedrock/eu.amazon.nova-2-lite-v1:0',
         },
         tools: {
-          core: ['write_file', 'read_file', 'replace', 'update_topic', 'list_directory', 'exit_plan_mode'],
+          core: [
+            'write_file',
+            'read_file',
+            'replace',
+            'update_topic',
+            'list_directory',
+            'exit_plan_mode',
+          ],
         },
         general: {
           plan: { enabled: true, directory: plansDir },
@@ -82,7 +93,9 @@ describe('Bedrock Massive Go Stress Test', () => {
     });
 
     // Programmatically seed 20 complex Go files (each 500+ lines)
-    console.log('Generating 20 large Go files (each 500+ lines, total ~10,700 lines of code)...');
+    console.log(
+      'Generating 20 large Go files (each 500+ lines, total ~10,700 lines of code)...',
+    );
     for (let i = 0; i < 20; i++) {
       const goCode = generateLargeGoFile(i);
       rig.createFile(`math_${i}.go`, goCode);
@@ -97,40 +110,72 @@ describe('Bedrock Massive Go Stress Test', () => {
       });
     } catch (err) {
       const toolLogs = rig.readToolLogs();
-      console.error('STRESS TEST ALL TOOL LOGS ON FAILURE:', JSON.stringify(toolLogs, null, 2));
+      console.error(
+        'STRESS TEST ALL TOOL LOGS ON FAILURE:',
+        JSON.stringify(toolLogs, null, 2),
+      );
       throw err;
     }
 
     const toolLogs = rig.readToolLogs();
-    console.log('STRESS TEST TOOL LOG DETAILS:', JSON.stringify(toolLogs, null, 2));
+    console.log(
+      'STRESS TEST TOOL LOG DETAILS:',
+      JSON.stringify(toolLogs, null, 2),
+    );
 
     // Assert plan was written
     const writePlanLog = toolLogs.find(
-      (l) => l.toolRequest.name === 'write_file' && l.toolRequest.args.includes('stress_plan.md') && l.toolRequest.success === true
+      (l) =>
+        l.toolRequest.name === 'write_file' &&
+        l.toolRequest.args.includes('stress_plan.md') &&
+        l.toolRequest.success === true,
     );
-    expect(writePlanLog, 'Expected a successful write_file tool call for the stress plan').toBeDefined();
+    expect(
+      writePlanLog,
+      'Expected a successful write_file tool call for the stress plan',
+    ).toBeDefined();
 
     // Assert exit_plan_mode was executed
     const exitPlanLog = toolLogs.find(
-      (l) => l.toolRequest.name === 'exit_plan_mode' && l.toolRequest.success === true
+      (l) =>
+        l.toolRequest.name === 'exit_plan_mode' &&
+        l.toolRequest.success === true,
     );
-    expect(exitPlanLog, 'Expected a successful exit_plan_mode tool call').toBeDefined();
+    expect(
+      exitPlanLog,
+      'Expected a successful exit_plan_mode tool call',
+    ).toBeDefined();
 
     // Assert replace was executed on math_0.go
     const replaceLog0 = toolLogs.find(
-      (l) => l.toolRequest.name === 'replace' && l.toolRequest.args.includes('math_0.go') && l.toolRequest.success === true
+      (l) =>
+        l.toolRequest.name === 'replace' &&
+        l.toolRequest.args.includes('math_0.go') &&
+        l.toolRequest.success === true,
     );
-    expect(replaceLog0, 'Expected a successful replace tool call modifying math_0.go').toBeDefined();
+    expect(
+      replaceLog0,
+      'Expected a successful replace tool call modifying math_0.go',
+    ).toBeDefined();
 
     // Assert replace was executed on math_19.go
     const replaceLog19 = toolLogs.find(
-      (l) => l.toolRequest.name === 'replace' && l.toolRequest.args.includes('math_19.go') && l.toolRequest.success === true
+      (l) =>
+        l.toolRequest.name === 'replace' &&
+        l.toolRequest.args.includes('math_19.go') &&
+        l.toolRequest.success === true,
     );
-    expect(replaceLog19, 'Expected a successful replace tool call modifying math_19.go').toBeDefined();
+    expect(
+      replaceLog19,
+      'Expected a successful replace tool call modifying math_19.go',
+    ).toBeDefined();
 
     // Verify disk content
     const file0Content = readFileSync(join(rig.testDir!, 'math_0.go'), 'utf8');
-    const file19Content = readFileSync(join(rig.testDir!, 'math_19.go'), 'utf8');
+    const file19Content = readFileSync(
+      join(rig.testDir!, 'math_19.go'),
+      'utf8',
+    );
 
     expect(file0Content).not.toContain('return (a * b) + 1 - a');
     expect(file19Content).not.toContain('return a + b + 65');

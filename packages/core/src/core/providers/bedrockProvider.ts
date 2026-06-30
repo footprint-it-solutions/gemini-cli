@@ -944,6 +944,9 @@ export class BedrockContentGenerator implements ContentGenerator {
       number,
       { name: string; input: string; id: string }
     >();
+    let sawAssistantText = false;
+    let sawContentBlockStop = false;
+    let assembledFunctionCall = false;
 
     for await (const chunk of stream) {
       if (chunk.contentBlockStart?.start?.toolUse) {
@@ -971,11 +974,13 @@ export class BedrockContentGenerator implements ContentGenerator {
 
       if (chunk.contentBlockDelta?.delta?.text) {
         const text = chunk.contentBlockDelta.delta.text;
+        sawAssistantText = true;
         yield {
           candidates: [{ content: { role: 'model', parts: [{ text }] } }],
         } as any as GenerateContentResponse;
       }
       if (chunk.contentBlockStop) {
+        sawContentBlockStop = true;
         const index = chunk.contentBlockStop.contentBlockIndex;
         const toolCall = toolCalls.get(index);
         if (toolCall) {
@@ -988,6 +993,7 @@ export class BedrockContentGenerator implements ContentGenerator {
             args: args,
             id: toolCall.id,
           };
+          assembledFunctionCall = true;
           yield {
             candidates: [
               {
@@ -1018,6 +1024,16 @@ export class BedrockContentGenerator implements ContentGenerator {
           functionCalls.push(fnCall);
         }
 
+        debugLogger.debug(
+          '[Bedrock Stream] messageStop',
+          JSON.stringify({
+            stopReason: chunk.messageStop.stopReason || null,
+            sawAssistantText,
+            sawContentBlockStop,
+            assembledFunctionCall:
+              assembledFunctionCall || functionCalls.length > 0,
+          }),
+        );
         yield {
           candidates: [
             {

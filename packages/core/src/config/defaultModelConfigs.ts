@@ -311,6 +311,12 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
       extends: 'gemini-3-flash-base',
       modelConfig: {},
     },
+    'bedrock-next-speaker-checker': {
+      extends: 'base',
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_LITE,
+      },
+    },
     'context-snapshotter': {
       extends: 'gemini-3-flash-base',
       modelConfig: {
@@ -368,7 +374,9 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
     // Google Gemini
     'gemini-1.5-pro': { modelConfig: { model: 'google/gemini-1.5-pro' } },
     'gemini-1.5-flash': { modelConfig: { model: 'google/gemini-1.5-flash' } },
-    'gemini-2.0-flash-exp': { modelConfig: { model: 'google/gemini-2.0-flash-exp' } },
+    'gemini-2.0-flash-exp': {
+      modelConfig: { model: 'google/gemini-2.0-flash-exp' },
+    },
 
     // OpenAI
     'gpt-4o': { modelConfig: { model: 'openai/gpt-4o' } },
@@ -380,14 +388,20 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
     'nova-pro': { modelConfig: { model: 'bedrock/' + AMAZON_NOVA_PRO } },
     'nova-lite': { modelConfig: { model: 'bedrock/' + AMAZON_NOVA_LITE } },
     'nova-micro': { modelConfig: { model: 'bedrock/' + AMAZON_NOVA_MICRO } },
-    'bedrock/nova-pro': { modelConfig: { model: 'bedrock/' + AMAZON_NOVA_PRO } },
-    'bedrock/nova-lite': { modelConfig: { model: 'bedrock/' + AMAZON_NOVA_LITE } },
-    'bedrock/nova-micro': { modelConfig: { model: 'bedrock/' + AMAZON_NOVA_MICRO } },
+    'bedrock/nova-pro': {
+      modelConfig: { model: 'bedrock/' + AMAZON_NOVA_PRO },
+    },
+    'bedrock/nova-lite': {
+      modelConfig: { model: 'bedrock/' + AMAZON_NOVA_LITE },
+    },
+    'bedrock/nova-micro': {
+      modelConfig: { model: 'bedrock/' + AMAZON_NOVA_MICRO },
+    },
 
     // Ollama
-    'llama3': { modelConfig: { model: 'ollama/' + OLLAMA_LLAMA3 } },
-    'mistral': { modelConfig: { model: 'ollama/' + OLLAMA_MISTRAL } },
-    'phi3': { modelConfig: { model: 'ollama/' + OLLAMA_PHI3 } },
+    llama3: { modelConfig: { model: 'ollama/' + OLLAMA_LLAMA3 } },
+    mistral: { modelConfig: { model: 'ollama/' + OLLAMA_MISTRAL } },
+    phi3: { modelConfig: { model: 'ollama/' + OLLAMA_PHI3 } },
     'llama3.1': { modelConfig: { model: 'ollama/' + OLLAMA_LLAMA3_1 } },
   },
   modelDefinitions: {
@@ -512,9 +526,24 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
     },
     'gemini-1.5-pro': { tier: 'pro', family: 'gemini-1.5' },
     'gemini-1.5-flash': { tier: 'flash', family: 'gemini-1.5' },
-    'nova-pro': { tier: 'pro', family: 'nova', displayName: 'Nova 2 Pro', isVisible: true },
-    'nova-lite': { tier: 'flash', family: 'nova', displayName: 'Nova 2 Lite', isVisible: true },
-    'nova-micro': { tier: 'flash', family: 'nova', displayName: 'Nova 2 Micro', isVisible: true },
+    'nova-pro': {
+      tier: 'pro',
+      family: 'nova',
+      displayName: 'Nova 2 Pro',
+      isVisible: true,
+    },
+    'nova-lite': {
+      tier: 'flash',
+      family: 'nova',
+      displayName: 'Nova 2 Lite',
+      isVisible: true,
+    },
+    'nova-micro': {
+      tier: 'flash',
+      family: 'nova',
+      displayName: 'Nova 2 Micro',
+      isVisible: true,
+    },
     'bedrock/nova-pro': { tier: 'pro', family: 'nova', isVisible: false },
     'bedrock/nova-lite': { tier: 'flash', family: 'nova', isVisible: false },
     'bedrock/nova-micro': { tier: 'flash', family: 'nova', isVisible: false },

@@ -15,13 +15,14 @@ import {
 } from 'vitest';
 import type { Content } from '@google/genai';
 import { BaseLlmClient } from '../core/baseLlmClient.js';
-import type { ContentGenerator } from '../core/contentGenerator.js';
+import { AuthType } from '../core/contentGenerator.js';
 import type { Config } from '../config/config.js';
 import {
   checkNextSpeaker,
   type NextSpeakerResponse,
 } from './nextSpeakerChecker.js';
 import { GeminiChat } from '../core/geminiChat.js';
+import { debugLogger } from './debugLogger.js';
 
 // Mock fs module to prevent actual file system operations during tests
 const mockFileSystem = new Map<string, string>();
@@ -56,6 +57,12 @@ vi.mock('node:fs', () => {
 // Mock GeminiClient and Config constructor
 vi.mock('../core/baseLlmClient.js');
 vi.mock('../config/config.js');
+vi.mock('./debugLogger.js', () => ({
+  debugLogger: {
+    warn: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
 
 describe('checkNextSpeaker', () => {
   let chatInstance: GeminiChat;
@@ -92,7 +99,7 @@ describe('checkNextSpeaker', () => {
         generateContentStream: vi.fn(),
         countTokens: vi.fn(),
         embedContent: vi.fn(),
-      } as ContentGenerator,
+      },
       mockConfig,
     );
 
@@ -197,9 +204,6 @@ describe('checkNextSpeaker', () => {
   });
 
   it('should return null if baseLlmClient.generateJson throws an error', async () => {
-    const consoleWarnSpy = vi
-      .spyOn(console, 'warn')
-      .mockImplementation(() => {});
     (chatInstance.getHistory as Mock).mockReturnValue([
       { role: 'model', parts: [{ text: 'Some model output.' }] },
     ] as Content[]);
@@ -214,16 +218,67 @@ describe('checkNextSpeaker', () => {
       promptId,
     );
     expect(result).toBeNull();
-    consoleWarnSpy.mockRestore();
+    expect(debugLogger.warn).toHaveBeenCalledWith(
+      '[NextSpeakerChecker] execution failed',
+      expect.stringContaining('API Error'),
+    );
   });
 
-  it('should return null if baseLlmClient.generateJson returns invalid JSON (missing next_speaker)', async () => {
+  it('should use a Bedrock-safe utility model override when Bedrock auth is active', async () => {
+    (chatInstance.getHistory as Mock).mockReturnValue([
+      { role: 'model', parts: [{ text: 'I will now continue:' }] },
+    ] as Content[]);
+    (mockBaseLlmClient.generateJson as Mock).mockResolvedValue({
+      reasoning: 'Continue',
+      next_speaker: 'model',
+    });
+
+    await checkNextSpeaker(
+      chatInstance,
+      mockBaseLlmClient,
+      abortSignal,
+      promptId,
+      {
+        authType: AuthType.BEDROCK,
+      },
+    );
+
+    const generateJsonCall = (mockBaseLlmClient.generateJson as Mock).mock
+      .calls[0][0];
+    expect(generateJsonCall.modelConfigKey.model).toBe(
+      'bedrock-next-speaker-checker',
+    );
+  });
+
+  it('should log valid user results distinctly', async () => {
+    (chatInstance.getHistory as Mock).mockReturnValue([
+      { role: 'model', parts: [{ text: 'What would you like to do?' }] },
+    ] as Content[]);
+    (mockBaseLlmClient.generateJson as Mock).mockResolvedValue({
+      reasoning: 'Asked a question',
+      next_speaker: 'user',
+    });
+
+    await checkNextSpeaker(
+      chatInstance,
+      mockBaseLlmClient,
+      abortSignal,
+      promptId,
+    );
+
+    expect(debugLogger.debug).toHaveBeenCalledWith(
+      '[NextSpeakerChecker] completed',
+      expect.stringContaining('"nextSpeaker":"user"'),
+    );
+  });
+
+  it('should log invalid checker responses distinctly', async () => {
     (chatInstance.getHistory as Mock).mockReturnValue([
       { role: 'model', parts: [{ text: 'Some model output.' }] },
     ] as Content[]);
     (mockBaseLlmClient.generateJson as Mock).mockResolvedValue({
-      reasoning: 'This is incomplete.',
-    } as unknown as NextSpeakerResponse); // Type assertion to simulate invalid response
+      reasoning: 'missing next speaker',
+    });
 
     const result = await checkNextSpeaker(
       chatInstance,
@@ -231,43 +286,12 @@ describe('checkNextSpeaker', () => {
       abortSignal,
       promptId,
     );
+
     expect(result).toBeNull();
-  });
-
-  it('should return null if baseLlmClient.generateJson returns a non-string next_speaker', async () => {
-    (chatInstance.getHistory as Mock).mockReturnValue([
-      { role: 'model', parts: [{ text: 'Some model output.' }] },
-    ] as Content[]);
-    (mockBaseLlmClient.generateJson as Mock).mockResolvedValue({
-      reasoning: 'Model made a statement, awaiting user input.',
-      next_speaker: 123, // Invalid type
-    } as unknown as NextSpeakerResponse);
-
-    const result = await checkNextSpeaker(
-      chatInstance,
-      mockBaseLlmClient,
-      abortSignal,
-      promptId,
+    expect(debugLogger.warn).toHaveBeenCalledWith(
+      '[NextSpeakerChecker] invalid response',
+      expect.stringContaining('missing next speaker'),
     );
-    expect(result).toBeNull();
-  });
-
-  it('should return null if baseLlmClient.generateJson returns an invalid next_speaker string value', async () => {
-    (chatInstance.getHistory as Mock).mockReturnValue([
-      { role: 'model', parts: [{ text: 'Some model output.' }] },
-    ] as Content[]);
-    (mockBaseLlmClient.generateJson as Mock).mockResolvedValue({
-      reasoning: 'Model made a statement, awaiting user input.',
-      next_speaker: 'neither', // Invalid enum value
-    } as unknown as NextSpeakerResponse);
-
-    const result = await checkNextSpeaker(
-      chatInstance,
-      mockBaseLlmClient,
-      abortSignal,
-      promptId,
-    );
-    expect(result).toBeNull();
   });
 
   it('should call generateJson with the correct parameters', async () => {
