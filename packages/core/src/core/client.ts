@@ -914,6 +914,17 @@ export class GeminiClient {
       }
     }
 
+    if (turn.finishReason?.toString() === 'MALFORMED_MODEL_OUTPUT') {
+      const forensicResponseText = turn.getResponseText() || '';
+      const toolCallsStr =
+        turn.pendingToolCalls.length > 0
+          ? JSON.stringify(turn.pendingToolCalls)
+          : 'none';
+      debugLogger.error(
+        `[Bedrock] Turn ended with malformed_model_output. Captured text: ${forensicResponseText}. Captured tool calls: ${toolCallsStr}`,
+      );
+    }
+
     if (!turn.pendingToolCalls.length && signal && !signal.aborted) {
       if (
         !this.config.getQuotaErrorOccurred() &&
@@ -953,7 +964,8 @@ export class GeminiClient {
         if (
           this.isBedrockAuth() &&
           !bedrockFallbackContinuationUsed &&
-          this.shouldFallbackContinueBedrockTurn(responseText)
+          (turn.finishReason?.toString() === 'MALFORMED_MODEL_OUTPUT' ||
+            this.shouldFallbackContinueBedrockTurn(responseText))
         ) {
           debugLogger.warn(
             '[GeminiClient] Bedrock fallback continuation triggered',

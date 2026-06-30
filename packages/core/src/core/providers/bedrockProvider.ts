@@ -798,6 +798,7 @@ export class BedrockContentGenerator implements ContentGenerator {
       debugLogger.error(
         `[Bedrock] Failed to parse tool call input for ${name}: ${cleaned} (${e.message})`,
       );
+      args = { __malformed_text: cleaned, __error: e.message };
     }
 
     return this.unwrapAndDefaultArgs(name, args);
@@ -1081,6 +1082,8 @@ export class BedrockContentGenerator implements ContentGenerator {
         return 'SAFETY';
       case 'malformed_tool_use':
         return 'MALFORMED_FUNCTION_CALL';
+      case 'malformed_model_output':
+        return 'MALFORMED_MODEL_OUTPUT';
       case 'model_context_window_exceeded':
         return 'MAX_TOKENS';
       case 'guardrail_intervened':
