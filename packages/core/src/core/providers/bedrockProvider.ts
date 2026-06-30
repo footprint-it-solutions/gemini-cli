@@ -62,21 +62,27 @@ function getAwsHomeDir(): string {
  */
 async function resolveSsoCredentials(profileName: string, logger?: any) {
   const awsHome = getAwsHomeDir();
-  let configPath = process.env['AWS_CONFIG_FILE'] || path.join(awsHome, '.aws', 'config');
+  let configPath =
+    process.env['AWS_CONFIG_FILE'] || path.join(awsHome, '.aws', 'config');
   if (configPath.startsWith('~/')) {
     configPath = path.join(awsHome, configPath.slice(2));
   }
   const configFile = configPath;
-  if (logger) logger.debug(`[Bedrock] resolveSsoCredentials: checking config file ${configFile}`);
-  
+  if (logger)
+    logger.debug(
+      `[Bedrock] resolveSsoCredentials: checking config file ${configFile}`,
+    );
+
   if (!fs.existsSync(configFile)) {
-    throw new Error(`[MANUAL_SSO_DEBUG] Config file does not exist at ${configFile}`);
+    throw new Error(
+      `[MANUAL_SSO_DEBUG] Config file does not exist at ${configFile}`,
+    );
   }
 
   const content = fs.readFileSync(configFile, 'utf-8');
   const profiles: Record<string, any> = {};
   const sessions: Record<string, any> = {};
-  
+
   let currentSection: any = null;
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
@@ -94,69 +100,99 @@ async function resolveSsoCredentials(profileName: string, logger?: any) {
 
   const profile = profiles[profileName];
   if (!profile) {
-    throw new Error(`[MANUAL_SSO_DEBUG] Profile ${profileName} not found in ${configFile}`);
+    throw new Error(
+      `[MANUAL_SSO_DEBUG] Profile ${profileName} not found in ${configFile}`,
+    );
   }
 
   const sessionName = profile['sso_session'];
-  const startUrl = sessionName ? sessions[sessionName]?.['sso_start_url'] : profile['sso_start_url'];
-  
+  const startUrl = sessionName
+    ? sessions[sessionName]?.['sso_start_url']
+    : profile['sso_start_url'];
+
   if (!startUrl) {
-    throw new Error(`[MANUAL_SSO_DEBUG] startUrl not found for profile ${profileName}`);
+    throw new Error(
+      `[MANUAL_SSO_DEBUG] startUrl not found for profile ${profileName}`,
+    );
   }
 
-  const ssoRegion = (sessionName ? sessions[sessionName]?.['sso_region'] : undefined) || profile['sso_region'] || profile['region'] || 'us-east-1';
+  const ssoRegion =
+    (sessionName ? sessions[sessionName]?.['sso_region'] : undefined) ||
+    profile['sso_region'] ||
+    profile['region'] ||
+    'us-east-1';
   const accountId = profile['sso_account_id'];
   const roleName = profile['sso_role_name'];
 
   if (!accountId || !roleName) {
-    throw new Error(`Profile ${profileName} is missing required SSO fields (sso_account_id, sso_role_name)`);
+    throw new Error(
+      `Profile ${profileName} is missing required SSO fields (sso_account_id, sso_role_name)`,
+    );
   }
 
   // Find the access token in the SSO cache
   const cacheDir = path.join(awsHome, '.aws', 'sso', 'cache');
   if (!fs.existsSync(cacheDir)) {
-    throw new Error(`AWS SSO cache directory not found at ${cacheDir}. Please run 'aws sso login --profile ${profileName}'`);
+    throw new Error(
+      `AWS SSO cache directory not found at ${cacheDir}. Please run 'aws sso login --profile ${profileName}'`,
+    );
   }
 
   // AWS CLI uses SHA1 of session name (or start URL if no session) for the cache filename
   const cacheKey = sessionName || startUrl;
-  const cacheFileName = crypto.createHash('sha1').update(cacheKey).digest('hex') + '.json';
+  const cacheFileName =
+    crypto.createHash('sha1').update(cacheKey).digest('hex') + '.json';
   const cacheFilePath = path.join(cacheDir, cacheFileName);
 
   if (!fs.existsSync(cacheFilePath)) {
-    throw new Error(`SSO cache file not found for ${profileName}. Please run 'aws sso login --profile ${profileName}'`);
+    throw new Error(
+      `SSO cache file not found for ${profileName}. Please run 'aws sso login --profile ${profileName}'`,
+    );
   }
 
   let tokenData: any;
   try {
     tokenData = JSON.parse(fs.readFileSync(cacheFilePath, 'utf-8'));
   } catch (e) {
-    throw new Error(`Failed to read SSO cache file for ${profileName}. Please run 'aws sso login --profile ${profileName}'`);
+    throw new Error(
+      `Failed to read SSO cache file for ${profileName}. Please run 'aws sso login --profile ${profileName}'`,
+    );
   }
 
   const accessToken = tokenData.accessToken;
   const expiresAt = tokenData.expiresAt;
 
   if (!accessToken) {
-    throw new Error(`No valid SSO access token found in cache. Please run 'aws sso login --profile ${profileName}'`);
+    throw new Error(
+      `No valid SSO access token found in cache. Please run 'aws sso login --profile ${profileName}'`,
+    );
   }
 
   if (expiresAt && new Date(expiresAt) < new Date()) {
-    throw new Error(`SSO access token for ${profileName} has expired. Please run 'aws sso login --profile ${profileName}'`);
+    throw new Error(
+      `SSO access token for ${profileName} has expired. Please run 'aws sso login --profile ${profileName}'`,
+    );
   }
 
   if (logger) {
-    logger.debug(`[Bedrock] Manually fetching role credentials for ${profileName} (Account: ${accountId}, Role: ${roleName}, Region: ${ssoRegion})`);
+    logger.debug(
+      `[Bedrock] Manually fetching role credentials for ${profileName} (Account: ${accountId}, Role: ${roleName}, Region: ${ssoRegion})`,
+    );
   }
 
   const ssoClient = new SSOClient({ region: ssoRegion });
-  const response = await ssoClient.send(new GetRoleCredentialsCommand({
-    accountId,
-    roleName,
-    accessToken,
-  }));
+  const response = await ssoClient.send(
+    new GetRoleCredentialsCommand({
+      accountId,
+      roleName,
+      accessToken,
+    }),
+  );
 
-  if (!response.roleCredentials?.accessKeyId || !response.roleCredentials?.secretAccessKey) {
+  if (
+    !response.roleCredentials?.accessKeyId ||
+    !response.roleCredentials?.secretAccessKey
+  ) {
     throw new Error('SSO service returned invalid credentials (missing keys)');
   }
 
@@ -164,7 +200,9 @@ async function resolveSsoCredentials(profileName: string, logger?: any) {
     accessKeyId: response.roleCredentials.accessKeyId,
     secretAccessKey: response.roleCredentials.secretAccessKey,
     sessionToken: response.roleCredentials.sessionToken,
-    expiration: response.roleCredentials.expiration ? new Date(response.roleCredentials.expiration) : undefined,
+    expiration: response.roleCredentials.expiration
+      ? new Date(response.roleCredentials.expiration)
+      : undefined,
   };
 }
 
@@ -172,7 +210,12 @@ export class BedrockContentGenerator implements ContentGenerator {
   private client: BedrockRuntimeClient;
 
   constructor(region?: string, profile?: string) {
-    const awsRegion = region || process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'] || 'eu-west-1';
+    const awsRegion =
+      region ||
+      process.env['AWS_BEDROCK_REGION'] ||
+      process.env['AWS_REGION'] ||
+      process.env['AWS_DEFAULT_REGION'] ||
+      'eu-west-1';
     const awsProfile = profile || process.env['AWS_PROFILE'];
     const cacheKey = `${awsRegion}:${awsProfile || 'default'}`;
 
@@ -181,18 +224,25 @@ export class BedrockContentGenerator implements ContentGenerator {
       return;
     }
 
-    const logger = (process.env['DEBUG'] === 'true' || process.env['DEBUG_MODE'] === 'true') 
-      ? {
-          debug: (...args: any[]) => debugLogger.log('[AWS SDK DEBUG]', ...args),
-          log: (...args: any[]) => debugLogger.log('[AWS SDK LOG]', ...args),
-          info: (...args: any[]) => debugLogger.log('[AWS SDK INFO]', ...args),
-          warn: (...args: any[]) => debugLogger.log('[AWS SDK WARN]', ...args),
-          error: (...args: any[]) => debugLogger.log('[AWS SDK ERROR]', ...args),
-        }
-      : undefined;
+    const logger =
+      process.env['DEBUG'] === 'true' || process.env['DEBUG_MODE'] === 'true'
+        ? {
+            debug: (...args: any[]) =>
+              debugLogger.log('[AWS SDK DEBUG]', ...args),
+            log: (...args: any[]) => debugLogger.log('[AWS SDK LOG]', ...args),
+            info: (...args: any[]) =>
+              debugLogger.log('[AWS SDK INFO]', ...args),
+            warn: (...args: any[]) =>
+              debugLogger.log('[AWS SDK WARN]', ...args),
+            error: (...args: any[]) =>
+              debugLogger.log('[AWS SDK ERROR]', ...args),
+          }
+        : undefined;
 
     if (logger) {
-      debugLogger.log(`[Bedrock] Creating new BedrockRuntimeClient for ${cacheKey}`);
+      debugLogger.log(
+        `[Bedrock] Creating new BedrockRuntimeClient for ${cacheKey}`,
+      );
     }
 
     // Fallback to standard SDK resolution (for non-SSO profiles)
@@ -209,11 +259,16 @@ export class BedrockContentGenerator implements ContentGenerator {
       // 1. Try the standard AWS SDK first (which handles its own memoization/refresh/refresh-tokens)
       try {
         const creds = await baseProvider();
-        if (logger) debugLogger.log(`[Bedrock] SDK successfully resolved credentials for ${awsProfile || 'default'}`);
+        if (logger)
+          debugLogger.log(
+            `[Bedrock] SDK successfully resolved credentials for ${awsProfile || 'default'}`,
+          );
         return creds;
       } catch (e: any) {
         if (logger) {
-          debugLogger.warn(`[Bedrock] Standard SDK resolution failed: ${e.message}. Re-creating standard provider and falling back.`);
+          debugLogger.warn(
+            `[Bedrock] Standard SDK resolution failed: ${e.message}. Re-creating standard provider and falling back.`,
+          );
         }
         // Re-create the standard provider so we don't cache the rejection for the next request/CLI command
         baseProvider = fromNodeProviderChain({
@@ -224,13 +279,23 @@ export class BedrockContentGenerator implements ContentGenerator {
       }
 
       // 2. Fallback: Custom manual SSO resolver with memoization and auto-refresh
-      if (cachedCustomCreds && cachedCustomCreds.expiration && cachedCustomCreds.expiration.getTime() > Date.now() + 5 * 60 * 1000) {
-        if (logger) debugLogger.log(`[Bedrock] Using cached custom AWS credentials (expires: ${cachedCustomCreds.expiration})`);
+      if (
+        cachedCustomCreds &&
+        cachedCustomCreds.expiration &&
+        cachedCustomCreds.expiration.getTime() > Date.now() + 5 * 60 * 1000
+      ) {
+        if (logger)
+          debugLogger.log(
+            `[Bedrock] Using cached custom AWS credentials (expires: ${cachedCustomCreds.expiration})`,
+          );
         return cachedCustomCreds;
       }
 
       if (customRefreshPromise) {
-        if (logger) debugLogger.log(`[Bedrock] Reusing active custom AWS credential refresh promise`);
+        if (logger)
+          debugLogger.log(
+            `[Bedrock] Reusing active custom AWS credential refresh promise`,
+          );
         return customRefreshPromise;
       }
 
@@ -239,16 +304,25 @@ export class BedrockContentGenerator implements ContentGenerator {
           if (awsProfile) {
             const ssoCreds = await resolveSsoCredentials(awsProfile, logger);
             if (ssoCreds) {
-              if (logger) debugLogger.log(`[Bedrock] Manual SSO resolution succeeded for ${awsProfile}`);
+              if (logger)
+                debugLogger.log(
+                  `[Bedrock] Manual SSO resolution succeeded for ${awsProfile}`,
+                );
               cachedCustomCreds = ssoCreds;
               return ssoCreds;
             }
           }
-          throw new Error('Custom SSO resolution failed or no profile provided.');
+          throw new Error(
+            'Custom SSO resolution failed or no profile provided.',
+          );
         } catch (e: any) {
           if (logger) {
-            debugLogger.error(`[Bedrock] Custom Credential Resolution Failed: ${e.message}`);
-            debugLogger.error(`[Bedrock] Custom Credential Error Stack: ${e.stack}`);
+            debugLogger.error(
+              `[Bedrock] Custom Credential Resolution Failed: ${e.message}`,
+            );
+            debugLogger.error(
+              `[Bedrock] Custom Credential Error Stack: ${e.stack}`,
+            );
           }
           throw e;
         } finally {
@@ -277,20 +351,32 @@ export class BedrockContentGenerator implements ContentGenerator {
       this.ensureContentArray(request.contents as any),
       !!toolConfig,
     );
-    const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
+    const system = this.mapSystemInstruction(
+      request.config?.systemInstruction as any,
+    );
 
-    const modelIdRaw = request.model.startsWith('bedrock/') ? request.model.slice(8) : request.model;
+    const modelIdRaw = request.model.startsWith('bedrock/')
+      ? request.model.slice(8)
+      : request.model;
     let modelId = modelIdRaw;
 
     // Support configurable Bedrock inference profile prefix (default to 'eu' for eu-west-1)
     const bedrockPrefix = process.env['BEDROCK_PREFIX'];
-    if (bedrockPrefix && (modelId.startsWith('us.amazon.nova') || modelId.startsWith('eu.amazon.nova'))) {
+    if (
+      bedrockPrefix &&
+      (modelId.startsWith('us.amazon.nova') ||
+        modelId.startsWith('eu.amazon.nova'))
+    ) {
       modelId = modelId.replace(/^(us|eu)\./, `${bedrockPrefix}.`);
     }
 
-    const awsRegion = process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'] || 'eu-west-1';
+    const awsRegion =
+      process.env['AWS_BEDROCK_REGION'] ||
+      process.env['AWS_REGION'] ||
+      process.env['AWS_DEFAULT_REGION'] ||
+      'eu-west-1';
 
-    const maxTokensLimit = modelId.includes('nova') ? 5120 : 4096;
+    const maxTokensLimit = modelId.includes('nova') ? 10000 : 4096;
 
     const command = new ConverseCommand({
       modelId,
@@ -309,7 +395,10 @@ export class BedrockContentGenerator implements ContentGenerator {
       const response = await this.client.send(command);
       return this.ensureGenerateContentResponse(this.mapResponse(response));
     } catch (error: any) {
-      if (error.name === 'CredentialsProviderError' || error.message?.includes('credential')) {
+      if (
+        error.name === 'CredentialsProviderError' ||
+        error.message?.includes('credential')
+      ) {
         debugLogger.error(`[Bedrock] Credential Error: ${error.message}`);
         debugLogger.error(`[Bedrock] Error Stack: ${error.stack}`);
       }
@@ -336,20 +425,32 @@ export class BedrockContentGenerator implements ContentGenerator {
       this.ensureContentArray(request.contents as any),
       !!toolConfig,
     );
-    const system = this.mapSystemInstruction(request.config?.systemInstruction as any);
+    const system = this.mapSystemInstruction(
+      request.config?.systemInstruction as any,
+    );
 
-    const modelIdRaw = request.model.startsWith('bedrock/') ? request.model.slice(8) : request.model;
+    const modelIdRaw = request.model.startsWith('bedrock/')
+      ? request.model.slice(8)
+      : request.model;
     let modelId = modelIdRaw;
 
     // Support configurable Bedrock inference profile prefix (default to 'eu' for eu-west-1)
     const bedrockPrefix = process.env['BEDROCK_PREFIX'];
-    if (bedrockPrefix && (modelId.startsWith('us.amazon.nova') || modelId.startsWith('eu.amazon.nova'))) {
+    if (
+      bedrockPrefix &&
+      (modelId.startsWith('us.amazon.nova') ||
+        modelId.startsWith('eu.amazon.nova'))
+    ) {
       modelId = modelId.replace(/^(us|eu)\./, `${bedrockPrefix}.`);
     }
 
-    const awsRegion = process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'] || 'eu-west-1';
+    const awsRegion =
+      process.env['AWS_BEDROCK_REGION'] ||
+      process.env['AWS_REGION'] ||
+      process.env['AWS_DEFAULT_REGION'] ||
+      'eu-west-1';
 
-    const maxTokensLimit = modelId.includes('nova') ? 5120 : 4096;
+    const maxTokensLimit = modelId.includes('nova') ? 10000 : 4096;
 
     const command = new ConverseStreamCommand({
       modelId,
@@ -368,8 +469,13 @@ export class BedrockContentGenerator implements ContentGenerator {
       const response = await this.client.send(command);
       return this.mapStreamResponse(response.stream);
     } catch (error: any) {
-      if (error.name === 'CredentialsProviderError' || error.message?.includes('credential')) {
-        debugLogger.error(`[Bedrock] Streaming Credential Error: ${error.message}`);
+      if (
+        error.name === 'CredentialsProviderError' ||
+        error.message?.includes('credential')
+      ) {
+        debugLogger.error(
+          `[Bedrock] Streaming Credential Error: ${error.message}`,
+        );
         debugLogger.error(`[Bedrock] Error Stack: ${error.stack}`);
       }
       console.error('[BedrockProvider] generateContentStream error:', {
@@ -409,9 +515,13 @@ export class BedrockContentGenerator implements ContentGenerator {
     const bedrockTools: Tool[] = [];
 
     for (const tool of tools) {
-      if (tool.functionDeclarations && Array.isArray(tool.functionDeclarations)) {
+      if (
+        tool.functionDeclarations &&
+        Array.isArray(tool.functionDeclarations)
+      ) {
         for (const declaration of tool.functionDeclarations) {
-          const parameters = declaration.parameters || declaration.parametersJsonSchema || {};
+          const parameters =
+            declaration.parameters || declaration.parametersJsonSchema || {};
           // Bedrock requires type: 'object' at the top level of the input schema
           if (!(parameters as any).type) {
             (parameters as any).type = 'object';
@@ -437,8 +547,13 @@ export class BedrockContentGenerator implements ContentGenerator {
       return undefined;
     }
 
-    if (process.env['DEBUG'] === 'true' || process.env['DEBUG_MODE'] === 'true') {
-      debugLogger.debug(`[BedrockProvider] Mapped Tools: ${JSON.stringify(bedrockTools, null, 2)}`);
+    if (
+      process.env['DEBUG'] === 'true' ||
+      process.env['DEBUG_MODE'] === 'true'
+    ) {
+      debugLogger.debug(
+        `[BedrockProvider] Mapped Tools: ${JSON.stringify(bedrockTools, null, 2)}`,
+      );
     }
 
     return {
@@ -446,7 +561,9 @@ export class BedrockContentGenerator implements ContentGenerator {
     };
   }
 
-  private appendToolHint(system: SystemContentBlock[] | undefined): SystemContentBlock[] | undefined {
+  private appendToolHint(
+    system: SystemContentBlock[] | undefined,
+  ): SystemContentBlock[] | undefined {
     if (!system) return undefined;
 
     // Strip out all hesitation-inducing and permission-seeking instructions
@@ -458,78 +575,78 @@ export class BedrockContentGenerator implements ContentGenerator {
         // Strip 1: Legacy "YOU MUST ASK" instruction
         text = text.replace(
           /If the user's request implies a change but does not explicitly state it, \*\*YOU MUST ASK\*\* for confirmation before modifying code\./gi,
-          ''
+          '',
         );
 
         // Strip 2: "ask for confirmation first"
         text = text.replace(
           /If the user implies a change \(e\.g\., reports a bug\) without explicitly asking for a fix, \*\*ask for confirmation first\*\./gi,
-          ''
+          '',
         );
 
         // Strip 3: "Do not take significant actions... without confirming"
         text = text.replace(
           /Do not take significant actions beyond the clear scope of the request without confirming with the user\./gi,
-          ''
+          '',
         );
 
         // Strip 4: "Confirm Ambiguity/Expansion" header line
         text = text.replace(
           /\*\*Confirm Ambiguity\/Expansion:\*\* Do not take significant actions beyond the clear scope of the request without confirming with the user\./gi,
-          ''
+          '',
         );
 
         // Strip 5: "explain first, don't just do it"
         text = text.replace(
           /If asked \*how\* to do something, explain first, don't just do it\./gi,
-          ''
+          '',
         );
 
         // Strip 6: Plan Mode Alignment Check
         text = text.replace(
           /- \*\*Alignment Check:\*\*.*Ask for feedback or confirmation.*/gi,
-          ''
+          '',
         );
 
         // Strip 7: Plan Mode Consultation Blocks
         text = text.replace(
           /then \*\*STOP and wait\*\* for the user to confirm agreement before drafting the plan\./gi,
-          'then autonomously draft the plan.'
+          'then autonomously draft the plan.',
         );
 
         // Strip 7.5: Discuss findings
         text = text.replace(
           /Before proceeding to Step 3 \(Draft\), you MUST discuss your findings and proposed strategy with the user to reach an informal agreement\./gi,
-          ''
+          '',
         );
 
         // Strip 8: Plan Mode Critical Wait
         text = text.replace(
           /\*\*CRITICAL:\*\* You MUST NOT proceed to Step 3 \(Draft\) or Step 4 \(Review & Approval\) in the same turn as your initial strategy proposal\. You MUST wait for user feedback and reach a clear agreement before drafting or submitting the plan\./gi,
-          ''
+          '',
         );
-        
+
         // Strip 9: Plan Mode Formal Approval prerequisite
         text = text.replace(
           /AFTER you have reached an informal agreement with the user in the chat regarding the proposed strategy\./gi,
-          ''
+          '',
         );
 
         // Strip 10: Inquiries wait
         text = text.replace(
           /Once an Inquiry is resolved, or while waiting for a Directive, stop and wait for the next user instruction\./gi,
-          ''
+          '',
         );
 
         // Strip 11: Legacy phase wait
         text = text.replace(
           /\*\*IMPORTANT: Complete ONE phase at a time\. Do NOT skip ahead or combine phases\. Wait for user input before proceeding to the next phase\.\*\*/gi,
-          ''
+          '',
         );
 
         return {
           ...block,
-          text
+          text,
         };
       }
       return block;
@@ -550,8 +667,8 @@ export class BedrockContentGenerator implements ContentGenerator {
   - NEVER end your response with phrases like "Please confirm", "Shall I proceed?", or "How would you like to proceed?". Just execute the tool!
   - You MUST provide ALL required parameters exactly as named in the schema.
   - Specifically for the 'update_topic' tool, you MUST include the 'strategic_intent' parameter as a string. NEVER omit 'strategic_intent'.
-  - Do not explain your thought process before calling a tool unless absolutely necessary.`
-      }
+  - Do not explain your thought process before calling a tool unless absolutely necessary.`,
+      },
     ];
   }
 
@@ -575,7 +692,10 @@ export class BedrockContentGenerator implements ContentGenerator {
       .filter((p: any): p is { text: string } => !!p);
   }
 
-  private mapContentsToMessages(contents: Content[], hasTools: boolean): Message[] {
+  private mapContentsToMessages(
+    contents: Content[],
+    hasTools: boolean,
+  ): Message[] {
     const messages: Message[] = [];
 
     for (const content of contents) {
@@ -587,9 +707,11 @@ export class BedrockContentGenerator implements ContentGenerator {
         if ('text' in part && part.text) {
           contentBlocks.push({ text: part.text } as any);
         } else if ('functionCall' in part && part.functionCall) {
-          let rawId = (part.functionCall as any).id || `tooluse_${Math.random().toString(36).substring(2, 9)}`;
+          let rawId =
+            (part.functionCall as any).id ||
+            `tooluse_${Math.random().toString(36).substring(2, 9)}`;
           if (rawId.includes('__')) {
-             rawId = rawId.split('__').slice(1).join('__');
+            rawId = rawId.split('__').slice(1).join('__');
           }
           contentBlocks.push({
             toolUse: {
@@ -601,9 +723,12 @@ export class BedrockContentGenerator implements ContentGenerator {
         } else if ('functionResponse' in part && part.functionResponse) {
           // Special handling for tool results in Bedrock Converse API
           // These are usually handled at the top level or via role 'user'
-          let rawId = (part.functionResponse as any).id || (part as any).toolUseId || 'unknown';
+          let rawId =
+            (part.functionResponse as any).id ||
+            (part as any).toolUseId ||
+            'unknown';
           if (rawId.includes('__')) {
-             rawId = rawId.split('__').slice(1).join('__');
+            rawId = rawId.split('__').slice(1).join('__');
           }
           contentBlocks.push({
             toolResult: {
@@ -617,14 +742,16 @@ export class BedrockContentGenerator implements ContentGenerator {
 
       if (contentBlocks.length > 0) {
         // Bedrock requirement: toolResult MUST be in a 'user' role message
-        const finalRole = contentBlocks.some(b => 'toolResult' in b) ? 'user' : role;
-        
+        const finalRole = contentBlocks.some((b) => 'toolResult' in b)
+          ? 'user'
+          : role;
+
         // Merge consecutive messages with same role (Bedrock requirement)
         const lastMessage = messages[messages.length - 1];
         if (lastMessage && lastMessage.role === finalRole) {
-           lastMessage.content?.push(...contentBlocks);
+          lastMessage.content?.push(...contentBlocks);
         } else {
-           messages.push({ role: finalRole as any, content: contentBlocks });
+          messages.push({ role: finalRole as any, content: contentBlocks });
         }
       }
     }
@@ -635,7 +762,12 @@ export class BedrockContentGenerator implements ContentGenerator {
         const seenToolResultIds = new Set<string>();
         const uniqueContent: any[] = [];
         for (const block of message.content) {
-          if (block && typeof block === 'object' && 'toolResult' in block && (block as any).toolResult) {
+          if (
+            block &&
+            typeof block === 'object' &&
+            'toolResult' in block &&
+            (block as any).toolResult
+          ) {
             const id = (block as any).toolResult.toolUseId;
             if (seenToolResultIds.has(id)) {
               continue;
@@ -663,7 +795,9 @@ export class BedrockContentGenerator implements ContentGenerator {
     try {
       args = cleaned ? JSON.parse(cleaned) : {};
     } catch (e: any) {
-      debugLogger.error(`[Bedrock] Failed to parse tool call input for ${name}: ${cleaned} (${e.message})`);
+      debugLogger.error(
+        `[Bedrock] Failed to parse tool call input for ${name}: ${cleaned} (${e.message})`,
+      );
     }
 
     return this.unwrapAndDefaultArgs(name, args);
@@ -673,7 +807,10 @@ export class BedrockContentGenerator implements ContentGenerator {
     let args = inputArgs || {};
 
     // Unwrap if wrapped inside a single string property (like args.input)
-    if (Object.keys(args).length === 1 && typeof Object.values(args)[0] === 'string') {
+    if (
+      Object.keys(args).length === 1 &&
+      typeof Object.values(args)[0] === 'string'
+    ) {
       const singleValue = Object.values(args)[0] as string;
       if (singleValue.trim().startsWith('{')) {
         try {
@@ -705,7 +842,10 @@ export class BedrockContentGenerator implements ContentGenerator {
       if (!args.new_string) args.new_string = '';
 
       // Fix Bedrock Nova dropping base indentation on new_string
-      if (typeof args.old_string === 'string' && typeof args.new_string === 'string') {
+      if (
+        typeof args.old_string === 'string' &&
+        typeof args.new_string === 'string'
+      ) {
         const oldLines = args.old_string.split('\n');
         const newLines = args.new_string.split('\n');
 
@@ -713,19 +853,31 @@ export class BedrockContentGenerator implements ContentGenerator {
           const oldIndentMatch = oldLines[0].match(/^([ \t]+)/);
           const newIndentMatch = newLines[0].match(/^([ \t]+)/);
 
-          if (oldIndentMatch && newIndentMatch && oldIndentMatch[1] === newIndentMatch[1]) {
+          if (
+            oldIndentMatch &&
+            newIndentMatch &&
+            oldIndentMatch[1] === newIndentMatch[1]
+          ) {
             const baseIndent = oldIndentMatch[1];
-            
-            const oldIsConsistent = oldLines.every((line: string) => line.trim() === '' || line.startsWith(baseIndent));
+
+            const oldIsConsistent = oldLines.every(
+              (line: string) =>
+                line.trim() === '' || line.startsWith(baseIndent),
+            );
 
             if (oldIsConsistent) {
-              const subsequentNewLines = newLines.slice(1).filter((l: string) => l.trim() !== '');
+              const subsequentNewLines = newLines
+                .slice(1)
+                .filter((l: string) => l.trim() !== '');
               if (subsequentNewLines.length > 0) {
-                const minIndent = subsequentNewLines.reduce((min: number, line: string) => {
-                  const match = line.match(/^([ \t]*)/);
-                  const indent = match ? match[1].length : 0;
-                  return Math.min(min, indent);
-                }, Infinity);
+                const minIndent = subsequentNewLines.reduce(
+                  (min: number, line: string) => {
+                    const match = line.match(/^([ \t]*)/);
+                    const indent = match ? match[1].length : 0;
+                    return Math.min(min, indent);
+                  },
+                  Infinity,
+                );
 
                 // If Bedrock dropped the indentation back to 0 for subsequent lines
                 if (minIndent === 0) {
@@ -748,7 +900,7 @@ export class BedrockContentGenerator implements ContentGenerator {
 
   private mapResponse(response: any): GenerateContentResponse {
     const text = response.output?.message?.content?.[0]?.text || '';
-    
+
     const functionCalls: any[] = [];
     const toolCalls = response.output?.message?.content
       ?.filter((c: any) => !!c.toolUse)
@@ -769,10 +921,7 @@ export class BedrockContentGenerator implements ContentGenerator {
         {
           content: {
             role: 'model',
-            parts: [
-              ...(text ? [{ text }] : []),
-              ...(toolCalls || []),
-            ],
+            parts: [...(text ? [{ text }] : []), ...(toolCalls || [])],
           },
           finishReason: this.mapFinishReason(response.stopReason),
         },
@@ -781,27 +930,40 @@ export class BedrockContentGenerator implements ContentGenerator {
       usageMetadata: {
         promptTokenCount: response.usage?.inputTokens || 0,
         candidatesTokenCount: response.usage?.outputTokens || 0,
-        totalTokenCount: (response.usage?.inputTokens || 0) + (response.usage?.outputTokens || 0),
+        totalTokenCount:
+          (response.usage?.inputTokens || 0) +
+          (response.usage?.outputTokens || 0),
       },
     } as any as GenerateContentResponse;
   }
 
-  private async *mapStreamResponse(stream: any): AsyncGenerator<GenerateContentResponse> {
-    const toolCalls = new Map<number, { name: string; input: string; id: string }>();
+  private async *mapStreamResponse(
+    stream: any,
+  ): AsyncGenerator<GenerateContentResponse> {
+    const toolCalls = new Map<
+      number,
+      { name: string; input: string; id: string }
+    >();
 
     for await (const chunk of stream) {
       if (chunk.contentBlockStart?.start?.toolUse) {
-        debugLogger.debug(`[Bedrock Stream] toolUse START: index=${chunk.contentBlockStart.contentBlockIndex}, name=${chunk.contentBlockStart.start.toolUse.name}`);
+        debugLogger.debug(
+          `[Bedrock Stream] toolUse START: index=${chunk.contentBlockStart.contentBlockIndex}, name=${chunk.contentBlockStart.start.toolUse.name}`,
+        );
         toolCalls.set(chunk.contentBlockStart.contentBlockIndex, {
           name: chunk.contentBlockStart.start.toolUse.name,
           input: '',
           id: chunk.contentBlockStart.start.toolUse.toolUseId,
         });
       }
-      
+
       if (chunk.contentBlockDelta?.delta?.toolUse) {
-        debugLogger.debug(`[Bedrock Stream] toolUse DELTA: index=${chunk.contentBlockDelta.contentBlockIndex}, input=${chunk.contentBlockDelta.delta.toolUse.input}`);
-        const toolCall = toolCalls.get(chunk.contentBlockDelta.contentBlockIndex);
+        debugLogger.debug(
+          `[Bedrock Stream] toolUse DELTA: index=${chunk.contentBlockDelta.contentBlockIndex}, input=${chunk.contentBlockDelta.delta.toolUse.input}`,
+        );
+        const toolCall = toolCalls.get(
+          chunk.contentBlockDelta.contentBlockIndex,
+        );
         if (toolCall) {
           toolCall.input += chunk.contentBlockDelta.delta.toolUse.input || '';
         }
@@ -817,58 +979,72 @@ export class BedrockContentGenerator implements ContentGenerator {
         const index = chunk.contentBlockStop.contentBlockIndex;
         const toolCall = toolCalls.get(index);
         if (toolCall) {
-          const args = this.sanitizeAndUnwrapArgs(toolCall.name, toolCall.input);
+          const args = this.sanitizeAndUnwrapArgs(
+            toolCall.name,
+            toolCall.input,
+          );
           const fnCall = {
             name: toolCall.name,
             args: args,
             id: toolCall.id,
           };
           yield {
-            candidates: [{
-              content: { role: 'model', parts: [{ functionCall: fnCall }] }
-            }],
+            candidates: [
+              {
+                content: { role: 'model', parts: [{ functionCall: fnCall }] },
+              },
+            ],
             functionCalls: [fnCall],
           } as any as GenerateContentResponse;
           toolCalls.delete(index);
         }
       }
       if (chunk.messageStop) {
-         const parts: any[] = [];
-         const functionCalls: any[] = [];
-         
-         for (const toolCall of toolCalls.values()) {
-           const args = this.sanitizeAndUnwrapArgs(toolCall.name, toolCall.input);
+        const parts: any[] = [];
+        const functionCalls: any[] = [];
 
-           const fnCall = {
-             name: toolCall.name,
-             args: args,
-             id: toolCall.id,
-           };
-           parts.push({ functionCall: fnCall });
-           functionCalls.push(fnCall);
-         }
+        for (const toolCall of toolCalls.values()) {
+          const args = this.sanitizeAndUnwrapArgs(
+            toolCall.name,
+            toolCall.input,
+          );
 
-         yield {
-            candidates: [{ 
-                content: { role: 'model', parts },
-                finishReason: this.mapFinishReason(chunk.messageStop.stopReason) 
-            }],
-            functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
-         } as any as GenerateContentResponse;
+          const fnCall = {
+            name: toolCall.name,
+            args: args,
+            id: toolCall.id,
+          };
+          parts.push({ functionCall: fnCall });
+          functionCalls.push(fnCall);
+        }
+
+        yield {
+          candidates: [
+            {
+              content: { role: 'model', parts },
+              finishReason: this.mapFinishReason(chunk.messageStop.stopReason),
+            },
+          ],
+          functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
+        } as any as GenerateContentResponse;
       }
       if (chunk.metadata) {
-         yield {
-            usageMetadata: {
-                promptTokenCount: chunk.metadata.usage?.inputTokens || 0,
-                candidatesTokenCount: chunk.metadata.usage?.outputTokens || 0,
-                totalTokenCount: (chunk.metadata.usage?.inputTokens || 0) + (chunk.metadata.usage?.outputTokens || 0)
-            }
-         } as any as GenerateContentResponse;
+        yield {
+          usageMetadata: {
+            promptTokenCount: chunk.metadata.usage?.inputTokens || 0,
+            candidatesTokenCount: chunk.metadata.usage?.outputTokens || 0,
+            totalTokenCount:
+              (chunk.metadata.usage?.inputTokens || 0) +
+              (chunk.metadata.usage?.outputTokens || 0),
+          },
+        } as any as GenerateContentResponse;
       }
     }
   }
 
-  private ensureGenerateContentResponse(response: any): GenerateContentResponse {
+  private ensureGenerateContentResponse(
+    response: any,
+  ): GenerateContentResponse {
     return response as GenerateContentResponse;
   }
 
@@ -877,16 +1053,26 @@ export class BedrockContentGenerator implements ContentGenerator {
       return 'STOP';
     }
     switch (reason) {
-      case 'end_turn': return 'STOP';
-      case 'max_tokens': return 'MAX_TOKENS';
-      case 'stop_sequence': return 'STOP';
-      case 'tool_use': return 'STOP';
-      case 'content_filtered': return 'SAFETY';
-      case 'malformed_tool_use': return 'MALFORMED_FUNCTION_CALL';
-      case 'model_context_window_exceeded': return 'MAX_TOKENS';
-      case 'guardrail_intervened': return 'SAFETY';
+      case 'end_turn':
+        return 'STOP';
+      case 'max_tokens':
+        return 'MAX_TOKENS';
+      case 'stop_sequence':
+        return 'STOP';
+      case 'tool_use':
+        return 'STOP';
+      case 'content_filtered':
+        return 'SAFETY';
+      case 'malformed_tool_use':
+        return 'MALFORMED_FUNCTION_CALL';
+      case 'model_context_window_exceeded':
+        return 'MAX_TOKENS';
+      case 'guardrail_intervened':
+        return 'SAFETY';
       default:
-        debugLogger.warn(`[Bedrock] Unmapped stopReason received from Bedrock API: '${reason}'. Falling back to 'OTHER'.`);
+        debugLogger.warn(
+          `[Bedrock] Unmapped stopReason received from Bedrock API: '${reason}'. Falling back to 'OTHER'.`,
+        );
         return 'OTHER';
     }
   }
