@@ -1215,9 +1215,7 @@ export class GeminiClient {
             microClassifier &&
             continuationAction !== 'continue' &&
             (bedrockTurnState.textKind === 'continuation_preamble' ||
-              bedrockTurnState.endsWithColon ||
-              bedrockTurnState.hasContinuationCue ||
-              bedrockTurnState.isReadFlowNarration)
+              bedrockTurnState.endsWithColon)
           ) {
             debugLogger.warn(
               '[GeminiClient] Bedrock micro classifier declined continuation for a continuation-like turn',

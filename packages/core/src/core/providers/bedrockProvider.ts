@@ -715,7 +715,7 @@ export class BedrockContentGenerator implements ContentGenerator {
     const structuredOutputContract = summarizeToolSchema(toolConfig);
 
     // Add a strong hint for Bedrock to use tools and strictly adhere to schemas
-    return [
+    const withHints = [
       ...cleanSystem,
       {
         text: `

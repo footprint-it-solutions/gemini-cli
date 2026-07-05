@@ -257,11 +257,21 @@ export async function checkNextSpeakerBedrock(
         )
       : [];
 
+    function isBedrockTurnDecision(
+      val: string | null,
+    ): val is BedrockTurnDecision {
+      return ['continue', 'stop', 'ask_user', 'uncertain'].includes(val || '');
+    }
+
+    function isConfidence(
+      val: string | null,
+    ): val is 'high' | 'medium' | 'low' {
+      return ['high', 'medium', 'low'].includes(val || '');
+    }
+
     if (
-      !decision ||
-      !['continue', 'stop', 'ask_user', 'uncertain'].includes(decision) ||
-      !confidence ||
-      !['high', 'medium', 'low'].includes(confidence) ||
+      !isBedrockTurnDecision(decision) ||
+      !isConfidence(confidence) ||
       summary === null
     ) {
       debugLogger.warn(
