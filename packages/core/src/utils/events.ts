@@ -193,6 +193,17 @@ export interface QuotaChangedPayload {
   resetTime?: string;
 }
 
+/**
+ * Payload for the 'utility-token-usage' event.
+ */
+export interface UtilityTokenUsagePayload {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  context?: string;
+}
+
 export enum CoreEvent {
   UserFeedback = 'user-feedback',
   ModelChanged = 'model-changed',
@@ -219,6 +230,7 @@ export enum CoreEvent {
   QuotaChanged = 'quota-changed',
   TelemetryKeychainAvailability = 'telemetry-keychain-availability',
   TelemetryTokenStorageType = 'telemetry-token-storage-type',
+  UtilityTokenUsage = 'utility-token-usage',
 }
 
 /**
@@ -254,6 +266,7 @@ export interface CoreEvents extends ExtensionEvents {
   [CoreEvent.SlashCommandConflicts]: [SlashCommandConflictsPayload];
   [CoreEvent.TelemetryKeychainAvailability]: [KeychainAvailabilityEvent];
   [CoreEvent.TelemetryTokenStorageType]: [TokenStorageInitializationEvent];
+  [CoreEvent.UtilityTokenUsage]: [UtilityTokenUsagePayload];
 }
 
 type EventBacklogItem = {

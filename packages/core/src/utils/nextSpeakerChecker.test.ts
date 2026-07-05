@@ -216,11 +216,14 @@ describe('checkNextSpeaker', () => {
       mockBaseLlmClient,
       abortSignal,
       promptId,
+      {
+        turnId: 'turn-123',
+      },
     );
     expect(result).toBeNull();
     expect(debugLogger.warn).toHaveBeenCalledWith(
       '[NextSpeakerChecker] execution failed',
-      expect.stringContaining('API Error'),
+      expect.stringContaining('"turnId":"turn-123"'),
     );
   });
 

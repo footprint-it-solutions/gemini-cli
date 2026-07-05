@@ -65,6 +65,7 @@ export class RecordingContentGenerator implements ContentGenerator {
     request: GenerateContentParameters,
     userPromptId: string,
     role: LlmRole,
+    requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     const recordedResponse: FakeResponse = {
       method: 'generateContentStream',
@@ -75,6 +76,7 @@ export class RecordingContentGenerator implements ContentGenerator {
       request,
       userPromptId,
       role,
+      requestId,
     );
 
     async function* stream(filePath: string) {

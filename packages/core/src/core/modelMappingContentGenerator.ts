@@ -70,11 +70,13 @@ export class ModelMappingContentGenerator implements ContentGenerator {
     request: GenerateContentParameters,
     userPromptId: string,
     role: LlmRole,
+    requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     return this.wrapped.generateContentStream(
       this.mapModel(request),
       userPromptId,
       role,
+      requestId,
     );
   }
 

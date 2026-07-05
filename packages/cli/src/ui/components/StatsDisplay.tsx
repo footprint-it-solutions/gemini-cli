@@ -364,6 +364,18 @@ export const StatsDisplay: React.FC<StatsDisplayProps> = ({
               </Text>
             </StatRow>
           )}
+        {metrics.utilityTokens && metrics.utilityTokens.total > 0 && (
+          <StatRow title="Utility Tokens:">
+            <Text color={theme.text.primary}>
+              {metrics.utilityTokens.total.toLocaleString()} (
+              <Text color={theme.text.secondary}>
+                {metrics.utilityTokens.input.toLocaleString()} in /{' '}
+                {metrics.utilityTokens.output.toLocaleString()} out
+              </Text>
+              )
+            </Text>
+          </StatRow>
+        )}
       </Section>
 
       <Section title="Performance">

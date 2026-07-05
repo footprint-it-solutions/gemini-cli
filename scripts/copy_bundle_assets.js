@@ -113,6 +113,7 @@ const extensionExamplesSrc = join(
 );
 const extensionExamplesDest = join(bundleDir, 'examples');
 const EXCLUDED_EXAMPLE_DIRS = ['node_modules', 'dist'];
+const EXCLUDED_EXAMPLE_FILES = ['.gitignore'];
 
 if (existsSync(extensionExamplesSrc)) {
   if (existsSync(extensionExamplesDest)) {
@@ -121,7 +122,13 @@ if (existsSync(extensionExamplesSrc)) {
   cpSync(extensionExamplesSrc, extensionExamplesDest, {
     recursive: true,
     dereference: true,
-    filter: (src) => !EXCLUDED_EXAMPLE_DIRS.some((dir) => src.includes(dir)),
+    filter: (src) => {
+      const basename = src.split(/[\\/]/).pop();
+      return (
+        !EXCLUDED_EXAMPLE_DIRS.some((dir) => src.includes(dir)) &&
+        !EXCLUDED_EXAMPLE_FILES.includes(basename || '')
+      );
+    },
   });
   console.log('Copied extension examples to bundle/examples/');
 }

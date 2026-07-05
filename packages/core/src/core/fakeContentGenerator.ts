@@ -132,6 +132,8 @@ export class FakeContentGenerator implements ContentGenerator {
     _userPromptId: string,
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     role: LlmRole,
+
+    _requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     const responses = this.getNextResponse('generateContentStream', request);
     async function* stream() {

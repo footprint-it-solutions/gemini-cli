@@ -38,6 +38,16 @@ import {
 import { getCoreSystemPrompt } from './prompts.js';
 import { DEFAULT_GEMINI_MODEL_AUTO } from '../config/models.js';
 import { FileDiscoveryService } from '../services/fileDiscoveryService.js';
+import { checkNextSpeakerBedrock } from '../bedrock/bedrockContinuation.js';
+
+vi.mock('../bedrock/bedrockContinuation.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../bedrock/bedrockContinuation.js')>();
+  return {
+    ...actual,
+    checkNextSpeakerBedrock: vi.fn(),
+  };
+});
 import { setSimulate429 } from '../utils/testUtils.js';
 import { tokenLimit } from './tokenLimits.js';
 import { ideContextStore } from '../ide/ideContext.js';
@@ -112,6 +122,7 @@ vi.mock('./turn', async (importOriginal) => {
     }
 
     getResponseText = vi.fn().mockReturnValue('Mock Response');
+    getDebugResponses = vi.fn().mockReturnValue([]);
   }
   // Export the mock class as 'Turn'
   return {
@@ -1305,7 +1316,7 @@ ${JSON.stringify(
       expect(finalResult).toBeInstanceOf(Turn);
     });
 
-    it('should use the Bedrock-safe next speaker checker model override', async () => {
+    it('should bypass the generic next speaker checker for Bedrock-authenticated sessions', async () => {
       const { checkNextSpeaker } =
         await import('../utils/nextSpeakerChecker.js');
       const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
@@ -1334,17 +1345,7 @@ ${JSON.stringify(
         // consume
       }
 
-      expect(mockCheckNextSpeaker).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.anything(),
-        expect.anything(),
-        'prompt-id-bedrock-checker',
-        expect.objectContaining({
-          authType: AuthType.BEDROCK,
-          modelOverride: 'bedrock-next-speaker-checker',
-          resolvedModel: 'bedrock-next-speaker-checker',
-        }),
-      );
+      expect(mockCheckNextSpeaker).not.toHaveBeenCalled();
     });
 
     it('should auto-continue once for incomplete Bedrock assistant turns when nextSpeaker check fails', async () => {
@@ -1361,6 +1362,13 @@ ${JSON.stringify(
       vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
         contentGeneratorConfig,
       );
+      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['classifier_continue'],
+        reason: 'The turn is a stranded action preamble.',
+        source: 'micro',
+      });
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1388,6 +1396,7 @@ ${JSON.stringify(
         events.push(result.value);
       }
 
+      expect(microSpy).toHaveBeenCalledTimes(1);
       expect(callCount).toBe(2);
       expect(events).toEqual(
         expect.arrayContaining([
@@ -1404,6 +1413,340 @@ ${JSON.stringify(
       );
     });
 
+    it('should auto-continue for repetitive Bedrock read-flow narration after read_file calls', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+
+      const mockChat: Partial<GeminiChat> = {
+        addHistory: vi.fn(),
+        setTools: vi.fn(),
+        getLastPromptTokenCount: vi.fn(),
+        getHistory: vi.fn().mockReturnValue([
+          { role: 'user', parts: [{ text: 'Find the unsafe assertion.' }] },
+          {
+            role: 'model',
+            parts: [
+              {
+                functionCall: {
+                  name: 'read_file',
+                  args: {
+                    file_path: 'packages/core/src/core/client.ts',
+                    start_line: 310,
+                    end_line: 350,
+                  },
+                },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            parts: [
+              {
+                functionResponse: {
+                  name: 'read_file',
+                  response: { success: true },
+                },
+              },
+            ],
+          },
+          {
+            role: 'model',
+            parts: [
+              {
+                functionCall: {
+                  name: 'read_file',
+                  args: {
+                    file_path: 'packages/core/src/core/client.ts',
+                    start_line: 350,
+                    end_line: 390,
+                  },
+                },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            parts: [
+              {
+                functionResponse: {
+                  name: 'read_file',
+                  response: { success: true },
+                },
+              },
+            ],
+          },
+        ]),
+      };
+      client['chat'] = mockChat as GeminiChat;
+      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['classifier_continue', 'read_flow_narration'],
+        reason: 'The turn should continue reading.',
+        source: 'micro',
+      });
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        const response =
+          callCount === 1
+            ? 'Let me keep reading to see if I can find the unsafe type assertion:'
+            : 'I found the unsafe type assertion in the client continuation path.';
+        (this as unknown as Turn).finishReason = FinishReason.OTHER;
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-read-flow',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(microSpy).toHaveBeenCalledTimes(1);
+      expect(callCount).toBe(2);
+    });
+
+    it('should auto-continue for Bedrock stranded action preambles with let me first wording', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['classifier_continue'],
+        reason: 'The turn should continue fixing.',
+        source: 'micro',
+      });
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        const response =
+          callCount === 1
+            ? 'Actually, let me first fix the two issues I identified:'
+            : 'Applied the fixes.';
+        (this as unknown as Turn).finishReason = FinishReason.OTHER;
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-let-me-first',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(microSpy).toHaveBeenCalledTimes(1);
+      expect(callCount).toBe(2);
+    });
+
+    it('should stop Bedrock fallback chaining when no new tool progress occurs', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['classifier_continue'],
+        reason:
+          'The turn should continue once, then stop on repeated no-progress.',
+        source: 'micro',
+      });
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        const response =
+          callCount === 1
+            ? "I'll now inspect the first thing."
+            : "I'll now inspect the second thing.";
+        (this as unknown as Turn).finishReason = FinishReason.OTHER;
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-double-fallback',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(microSpy).toHaveBeenCalledTimes(2);
+      expect(callCount).toBe(2);
+    });
+
+    it('should allow a second Bedrock fallback after new tool progress occurs', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+
+      let callCount = 0;
+      const mockChat: Partial<GeminiChat> = {
+        addHistory: vi.fn(),
+        setTools: vi.fn(),
+        getLastPromptTokenCount: vi.fn(),
+        getHistory: vi.fn().mockImplementation(() => {
+          if (callCount >= 2) {
+            return [
+              { role: 'user', parts: [{ text: 'Find the issue.' }] },
+              {
+                role: 'model',
+                parts: [
+                  {
+                    functionCall: {
+                      name: 'read_file',
+                      args: {
+                        file_path: 'packages/core/src/core/client.ts',
+                        start_line: 350,
+                        end_line: 390,
+                      },
+                    },
+                  },
+                ],
+              },
+              {
+                role: 'model',
+                parts: [
+                  {
+                    functionCall: {
+                      name: 'read_file',
+                      args: {
+                        file_path: 'packages/core/src/core/client.ts',
+                        start_line: 390,
+                        end_line: 430,
+                      },
+                    },
+                  },
+                ],
+              },
+            ];
+          }
+
+          return [
+            { role: 'user', parts: [{ text: 'Find the issue.' }] },
+            {
+              role: 'model',
+              parts: [
+                {
+                  functionCall: {
+                    name: 'read_file',
+                    args: {
+                      file_path: 'packages/core/src/core/client.ts',
+                      start_line: 310,
+                      end_line: 350,
+                    },
+                  },
+                },
+              ],
+            },
+            {
+              role: 'model',
+              parts: [
+                {
+                  functionCall: {
+                    name: 'read_file',
+                    args: {
+                      file_path: 'packages/core/src/core/client.ts',
+                      start_line: 350,
+                      end_line: 390,
+                    },
+                  },
+                },
+              ],
+            },
+          ];
+        }),
+      };
+      client['chat'] = mockChat as GeminiChat;
+      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['classifier_continue'],
+        reason: 'The turn should continue after new tool progress.',
+        source: 'micro',
+      });
+
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        (this as unknown as Turn).finishReason = FinishReason.OTHER;
+        const response =
+          callCount === 1
+            ? 'Keep reading to see if I can find the issue.'
+            : callCount === 2
+              ? 'Keep reading to see if I can confirm the issue.'
+              : 'I found the issue.';
+        this.getResponseText.mockReturnValue(response);
+        yield {
+          type: GeminiEventType.Content,
+          value: response,
+        };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-tool-progress',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(microSpy).toHaveBeenCalledTimes(3);
+      expect(callCount).toBe(3);
+    });
+
     it('should not auto-continue Bedrock fallback for assistant questions', async () => {
       const { checkNextSpeaker } =
         await import('../utils/nextSpeakerChecker.js');
@@ -1418,6 +1761,7 @@ ${JSON.stringify(
       vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
         contentGeneratorConfig,
       );
+      const microSpy = vi.mocked(checkNextSpeakerBedrock);
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1436,6 +1780,7 @@ ${JSON.stringify(
         // consume
       }
 
+      expect(microSpy).not.toHaveBeenCalled();
       expect(callCount).toBe(1);
     });
 
@@ -1453,6 +1798,7 @@ ${JSON.stringify(
       vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
         contentGeneratorConfig,
       );
+      const microSpy = vi.mocked(checkNextSpeakerBedrock);
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1473,6 +1819,7 @@ ${JSON.stringify(
         // consume
       }
 
+      expect(microSpy).not.toHaveBeenCalled();
       expect(callCount).toBe(1);
     });
 
@@ -1508,6 +1855,123 @@ ${JSON.stringify(
         // consume
       }
 
+      expect(callCount).toBe(1);
+    });
+
+    it('should use the Bedrock micro classifier for uncertain turns that should continue', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      vi.mocked(checkNextSpeaker).mockResolvedValue(null);
+
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue({
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      });
+
+      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['classifier_continue'],
+        reason: 'The turn looks stranded.',
+        source: 'micro',
+      });
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        (this as unknown as Turn).finishReason = FinishReason.OTHER;
+        const response = callCount === 1 ? '' : 'Completed the recovery step.';
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-micro-continue',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(microSpy).toHaveBeenCalledTimes(2);
+      expect(callCount).toBe(2);
+    });
+
+    it('should use the Bedrock micro classifier for uncertain turns that should stop', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      vi.mocked(checkNextSpeaker).mockResolvedValue(null);
+
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue({
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      });
+
+      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
+        decision: 'stop',
+        confidence: 'medium',
+        signals: ['classifier_stop'],
+        reason: 'The turn should stop.',
+        source: 'micro',
+      });
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        (this as unknown as Turn).finishReason = FinishReason.OTHER;
+        this.getResponseText.mockReturnValue('');
+        yield { type: GeminiEventType.Content, value: '' };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-micro-stop',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(microSpy).toHaveBeenCalledTimes(1);
+      expect(callCount).toBe(1);
+    });
+
+    it('should fall back conservatively when the Bedrock micro classifier fails', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      vi.mocked(checkNextSpeaker).mockResolvedValue(null);
+
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue({
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      });
+
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrock)
+        .mockResolvedValue(null);
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        (this as unknown as Turn).finishReason = FinishReason.OTHER;
+        this.getResponseText.mockReturnValue('');
+        yield { type: GeminiEventType.Content, value: '' };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-micro-fail',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(microSpy).toHaveBeenCalledTimes(1);
       expect(callCount).toBe(1);
     });
 

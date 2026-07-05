@@ -7,7 +7,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { wasmLoader } from 'esbuild-plugin-wasm';
 
 let esbuild;
@@ -110,6 +110,11 @@ const baseConfig = {
 const commonAliases = {
   punycode: 'punycode/',
 };
+
+const bundleOutdir = path.resolve(__dirname, 'bundle');
+if (existsSync(bundleOutdir)) {
+  rmSync(bundleOutdir, { recursive: true, force: true });
+}
 
 const cliConfig = {
   ...baseConfig,

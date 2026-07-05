@@ -52,7 +52,7 @@ export const DEFAULT_GENERATION_CONFIG: GenerationConfig = {
  */
 export const AMAZON_NOVA_PRO = 'eu.amazon.nova-2-pro-v1:0';
 export const AMAZON_NOVA_LITE = 'eu.amazon.nova-2-lite-v1:0';
-export const AMAZON_NOVA_MICRO = 'eu.amazon.nova-2-micro-v1:0';
+export const AMAZON_NOVA_MICRO = 'eu.amazon.nova-micro-v1:0';
 
 /**
  * Model aliases for Ollama models.
@@ -315,6 +315,15 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
       extends: 'base',
       modelConfig: {
         model: 'bedrock/' + AMAZON_NOVA_LITE,
+      },
+    },
+    'bedrock-chat-compression': {
+      extends: 'base',
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_LITE,
+        generateContentConfig: {
+          maxOutputTokens: 4000,
+        },
       },
     },
     'context-snapshotter': {

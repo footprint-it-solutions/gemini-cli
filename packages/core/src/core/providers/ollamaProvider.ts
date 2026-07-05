@@ -33,7 +33,10 @@ export class OllamaContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<GenerateContentResponse> {
-    const messages = this.mapContentsToMessages(request.contents as Content[], request.config?.systemInstruction as any);
+    const messages = this.mapContentsToMessages(
+      request.contents as Content[],
+      request.config?.systemInstruction as any,
+    );
     const tools = this.mapTools(request.config?.tools);
 
     const response = await this.client.chat({
@@ -56,8 +59,12 @@ export class OllamaContentGenerator implements ContentGenerator {
     request: GenerateContentParameters,
     _userPromptId: string,
     _role: LlmRole,
+    _requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
-    const messages = this.mapContentsToMessages(request.contents as Content[], request.config?.systemInstruction as any);
+    const messages = this.mapContentsToMessages(
+      request.contents as Content[],
+      request.config?.systemInstruction as any,
+    );
     const tools = this.mapTools(request.config?.tools);
 
     const stream = await this.client.chat({
@@ -76,23 +83,32 @@ export class OllamaContentGenerator implements ContentGenerator {
     return this.mapStreamResponse(stream);
   }
 
-  async countTokens(_request: CountTokensParameters): Promise<CountTokensResponse> {
+  async countTokens(
+    _request: CountTokensParameters,
+  ): Promise<CountTokensResponse> {
     return { totalTokens: 0 };
   }
 
-  async embedContent(request: EmbedContentParameters): Promise<EmbedContentResponse> {
-      const response = await this.client.embeddings({
-          model: request.model,
-          prompt: (request.contents as any).parts?.[0]?.text || '',
-      });
-      return {
-          embeddings: [{
-              values: response.embedding,
-          }]
-      } as EmbedContentResponse;
+  async embedContent(
+    request: EmbedContentParameters,
+  ): Promise<EmbedContentResponse> {
+    const response = await this.client.embeddings({
+      model: request.model,
+      prompt: (request.contents as any).parts?.[0]?.text || '',
+    });
+    return {
+      embeddings: [
+        {
+          values: response.embedding,
+        },
+      ],
+    } as EmbedContentResponse;
   }
 
-  private mapContentsToMessages(contents: Content[], systemInstruction?: string | Part | Part[] | Content): Message[] {
+  private mapContentsToMessages(
+    contents: Content[],
+    systemInstruction?: string | Part | Part[] | Content,
+  ): Message[] {
     const messages: Message[] = [];
 
     if (systemInstruction) {
@@ -100,9 +116,17 @@ export class OllamaContentGenerator implements ContentGenerator {
       if (typeof systemInstruction === 'string') {
         systemText = systemInstruction;
       } else if (Array.isArray(systemInstruction)) {
-        systemText = systemInstruction.map(p => (p as any).text || '').join('\n');
-      } else if (systemInstruction && 'parts' in systemInstruction && systemInstruction.parts) {
-        systemText = systemInstruction.parts.map(p => p.text || '').join('\n');
+        systemText = systemInstruction
+          .map((p) => (p as any).text || '')
+          .join('\n');
+      } else if (
+        systemInstruction &&
+        'parts' in systemInstruction &&
+        systemInstruction.parts
+      ) {
+        systemText = systemInstruction.parts
+          .map((p) => p.text || '')
+          .join('\n');
       } else {
         systemText = (systemInstruction as Part).text || '';
       }
@@ -115,7 +139,7 @@ export class OllamaContentGenerator implements ContentGenerator {
     for (const content of contents) {
       const role = content.role === 'model' ? 'assistant' : 'user';
       const parts = content.parts || [];
-      
+
       let textContent = '';
       const toolCalls: any[] = [];
 
@@ -132,19 +156,19 @@ export class OllamaContentGenerator implements ContentGenerator {
           });
         }
         if (part.functionResponse) {
-            messages.push({
-                role: 'tool',
-                content: JSON.stringify(part.functionResponse.response),
-            });
+          messages.push({
+            role: 'tool',
+            content: JSON.stringify(part.functionResponse.response),
+          });
         }
       }
 
       if (textContent || toolCalls.length > 0) {
-          messages.push({
-              role,
-              content: textContent,
-              tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-          });
+        messages.push({
+          role,
+          content: textContent,
+          tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+        });
       }
     }
 
@@ -203,12 +227,15 @@ export class OllamaContentGenerator implements ContentGenerator {
       usageMetadata: {
         promptTokenCount: response.prompt_eval_count,
         candidatesTokenCount: response.eval_count,
-        totalTokenCount: (response.prompt_eval_count || 0) + (response.eval_count || 0),
+        totalTokenCount:
+          (response.prompt_eval_count || 0) + (response.eval_count || 0),
       },
     } as GenerateContentResponse;
   }
 
-  private async *mapStreamResponse(stream: AsyncIterable<any>): AsyncGenerator<GenerateContentResponse> {
+  private async *mapStreamResponse(
+    stream: AsyncIterable<any>,
+  ): AsyncGenerator<GenerateContentResponse> {
     for await (const chunk of stream) {
       const parts: Part[] = [];
       if (chunk.message?.content) {
@@ -217,12 +244,12 @@ export class OllamaContentGenerator implements ContentGenerator {
 
       if (chunk.message?.tool_calls) {
         for (const tc of chunk.message.tool_calls) {
-            parts.push({
-                functionCall: {
-                    name: tc.function.name,
-                    args: tc.function.arguments,
-                },
-            });
+          parts.push({
+            functionCall: {
+              name: tc.function.name,
+              args: tc.function.arguments,
+            },
+          });
         }
       }
 
@@ -236,11 +263,14 @@ export class OllamaContentGenerator implements ContentGenerator {
             finishReason: chunk.done ? FinishReason.STOP : undefined,
           },
         ],
-        usageMetadata: chunk.done ? {
-            promptTokenCount: chunk.prompt_eval_count,
-            candidatesTokenCount: chunk.eval_count,
-            totalTokenCount: (chunk.prompt_eval_count || 0) + (chunk.eval_count || 0),
-        } : undefined,
+        usageMetadata: chunk.done
+          ? {
+              promptTokenCount: chunk.prompt_eval_count,
+              candidatesTokenCount: chunk.eval_count,
+              totalTokenCount:
+                (chunk.prompt_eval_count || 0) + (chunk.eval_count || 0),
+            }
+          : undefined,
       } as GenerateContentResponse;
     }
   }

@@ -32,9 +32,30 @@ import type { LlmRole } from '../../telemetry/llmRole.js';
 
 import { debugLogger } from '../../utils/debugLogger.js';
 
+import {
+  enhanceBedrockSystemPrompt,
+  detectMonologueRepetition,
+} from '../../bedrock/bedrockContinuation.js';
+
 import * as crypto from 'node:crypto';
 
 const clientCache = new Map<string, BedrockRuntimeClient>();
+
+interface BedrockTurnStateMetadata {
+  isStreaming: boolean;
+  rawStopReason: string | null;
+  responseText: string;
+  emittedToolCallCount: number;
+  stream: {
+    sawAssistantText: boolean;
+    sawContentBlockStop: boolean;
+    sawToolUseStart: boolean;
+    sawToolUseDelta: boolean;
+    sawToolUseComplete: boolean;
+    emittedAssistantTextBlockCount: number;
+    emittedToolCallCount: number;
+  };
+}
 
 /**
  * Robustly resolve the correct AWS configuration/credentials home directory.
@@ -381,7 +402,7 @@ export class BedrockContentGenerator implements ContentGenerator {
     const command = new ConverseCommand({
       modelId,
       messages,
-      system: this.appendToolHint(system),
+      system: this.appendToolHint(system, toolConfig),
       inferenceConfig: {
         maxTokens: request.config?.maxOutputTokens || maxTokensLimit,
         temperature: request.config?.temperature,
@@ -417,8 +438,9 @@ export class BedrockContentGenerator implements ContentGenerator {
 
   async generateContentStream(
     request: GenerateContentParameters,
-    _userPromptId: string,
+    userPromptId: string,
     _role: LlmRole,
+    requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     const toolConfig = this.mapTools(request.config?.tools);
     const messages = this.mapContentsToMessages(
@@ -455,7 +477,7 @@ export class BedrockContentGenerator implements ContentGenerator {
     const command = new ConverseStreamCommand({
       modelId,
       messages,
-      system: this.appendToolHint(system),
+      system: this.appendToolHint(system, toolConfig),
       inferenceConfig: {
         maxTokens: request.config?.maxOutputTokens || maxTokensLimit,
         temperature: request.config?.temperature,
@@ -465,9 +487,19 @@ export class BedrockContentGenerator implements ContentGenerator {
       toolConfig,
     });
 
+    debugLogger.debug(
+      '[Bedrock Stream] start',
+      JSON.stringify({
+        promptId: userPromptId,
+        turnId: requestId || null,
+        modelId,
+        hasTools: Boolean(toolConfig?.tools?.length),
+      }),
+    );
+
     try {
       const response = await this.client.send(command);
-      return this.mapStreamResponse(response.stream);
+      return this.mapStreamResponse(response.stream, userPromptId, requestId);
     } catch (error: any) {
       if (
         error.name === 'CredentialsProviderError' ||
@@ -486,6 +518,8 @@ export class BedrockContentGenerator implements ContentGenerator {
         fault: error.$fault,
         modelId,
         region: awsRegion,
+        promptId: userPromptId,
+        turnId: requestId,
       });
       throw error;
     }
@@ -522,6 +556,12 @@ export class BedrockContentGenerator implements ContentGenerator {
         for (const declaration of tool.functionDeclarations) {
           const parameters =
             declaration.parameters || declaration.parametersJsonSchema || {};
+          const description =
+            declaration.name === 'read_file'
+              ? `${declaration.description || ''} Bedrock-specific guidance: if a text file is small enough to fit in one read, prefer a single full-file read without start_line or end_line. When a file is too large for one read, prefer broader targeted ranges or parallel reads over many tiny sequential range reads when analyzing a long file.`.trim()
+              : declaration.name === 'read_many_files'
+                ? `${declaration.description || ''} Bedrock-specific guidance: prefer this tool for repository overviews, broad codebase analysis, and reading multiple related files instead of narrating and reading one small file slice at a time.`.trim()
+                : declaration.description || '';
           // Bedrock requires type: 'object' at the top level of the input schema
           if (!(parameters as any).type) {
             (parameters as any).type = 'object';
@@ -533,7 +573,7 @@ export class BedrockContentGenerator implements ContentGenerator {
           bedrockTools.push({
             toolSpec: {
               name: declaration.name || 'unknown',
-              description: declaration.description || '',
+              description,
               inputSchema: {
                 json: parameters,
               },
@@ -563,14 +603,14 @@ export class BedrockContentGenerator implements ContentGenerator {
 
   private appendToolHint(
     system: SystemContentBlock[] | undefined,
+    toolConfig?: ToolConfig,
   ): SystemContentBlock[] | undefined {
-    if (!system) return undefined;
-
-    // Strip out all hesitation-inducing and permission-seeking instructions
-    // because Bedrock Nova over-indexes on them and refuses to autonomously use tools.
-    const cleanSystem = system.map((block: any) => {
+    const cleanSystem = (system || []).map((block: any) => {
       if (block.text) {
         let text = block.text;
+
+        // Strip out all hesitation-inducing and permission-seeking instructions
+        // because Bedrock Nova over-indexes on them and refuses to autonomously use tools.
 
         // Strip 1: Legacy "YOU MUST ASK" instruction
         text = text.replace(
@@ -644,6 +684,26 @@ export class BedrockContentGenerator implements ContentGenerator {
           '',
         );
 
+        // Strip 12: Explain Before Acting mandate. Nova tends to externalize
+        // low-level discovery narration and then strand the turn.
+        text = text.replace(
+          /- \*\*Explain Before Acting:\*\* Never call tools in silence\.[^\n]*/gi,
+          '',
+        );
+
+        // Strip 13: No Chitchat exceptions that preserve pre-tool preambles.
+        text = text.replace(
+          /- \*\*No Chitchat:\*\* Avoid conversational filler, preambles \("Okay, I will now\.\.\."\), or postambles \("I have finished the changes\.\.\."\) unless they are[^\n]*/gi,
+          '',
+        );
+
+        // Strip 14: Shell command explanation mandate. Nova tends to
+        // over-expand this into multi-sentence narration before acting.
+        text = text.replace(
+          /- \*\*Explain Critical Commands:\*\* Before executing commands with .*?You MUST NOT use .*?\./gi,
+          '',
+        );
+
         return {
           ...block,
           text,
@@ -651,6 +711,8 @@ export class BedrockContentGenerator implements ContentGenerator {
       }
       return block;
     });
+
+    const structuredOutputContract = summarizeToolSchema(toolConfig);
 
     // Add a strong hint for Bedrock to use tools and strictly adhere to schemas
     return [
@@ -660,9 +722,25 @@ export class BedrockContentGenerator implements ContentGenerator {
 
   CRITICAL INSTRUCTION FOR TOOL USAGE:
   You MUST strictly adhere to the JSON schema defined for each tool.
+  STRUCTURED OUTPUT CONTRACT:
+  - Your response for this turn must be exactly one of: (1) a direct final answer to the user, (2) one or more tool calls that conform to the available schema, or (3) a direct question to the user when more input is truly required.
+  - If you intend to take action with a tool, do not narrate the action in plain text first. Emit the tool call directly.
+  - Never end an action-intent sentence with a trailing colon unless the same response immediately continues with the actual tool call or final content.
+  - Never emit status-only preambles such as "I will now...", "Let me...", or "Next, I'll..." as standalone output.
+  - Available structured output schemas for this request:
+${structuredOutputContract}
   - You are in Autonomous Execution Mode. You MUST NOT ask for permission, confirmation, or agreement before running tools.
   - When the user directs you to proceed, run, or make a change, execute the tool calls autonomously and immediately.
   - DO NOT output conversational text, explanations, or questions before calling the tool. Output the tool call JSON directly.
+  - For repetitive discovery work such as sequential file reads or searches, avoid interim narration like "let me keep reading". Call the next tool directly.
+  - If a text file is likely small enough to fit in one read, prefer a single full-file 'read_file' call without line bounds.
+  - Prefer fewer, larger targeted reads or parallel reads over many tiny sequential 'read_file' calls when exploring long files.
+  - For repository analysis or when gathering context from several related files, prefer 'read_many_files' over a long series of one-file or one-slice reads.
+  - Minimize user-visible narration. Outside of the actual answer or tool call, use at most one short sentence only when it materially helps the user.
+  - Never emit multiple planning, status, or self-correction sentences in a row such as "Let me check...", "Actually...", "I will now...", or "I'm going to...".
+  - Do not expose chain-of-thought, tentative planning, or internal debate in user-visible output.
+  - If you need to provide code in assistant text, start with the code immediately. Do not announce or preview the code first.
+  - If tools are available and the user asked for a code change, prefer modifying files with tools instead of pasting long replacement code into chat unless the user explicitly asked for inline code.
   - DO NOT format tool arguments (like old_string and new_string) as markdown code blocks in your conversational text.
   - NEVER end your response with phrases like "Please confirm", "Shall I proceed?", or "How would you like to proceed?". Just execute the tool!
   - You MUST provide ALL required parameters exactly as named in the schema.
@@ -670,6 +748,8 @@ export class BedrockContentGenerator implements ContentGenerator {
   - Do not explain your thought process before calling a tool unless absolutely necessary.`,
       },
     ];
+
+    return enhanceBedrockSystemPrompt(withHints);
   }
 
   private mapSystemInstruction(
@@ -707,6 +787,14 @@ export class BedrockContentGenerator implements ContentGenerator {
         if ('text' in part && part.text) {
           contentBlocks.push({ text: part.text } as any);
         } else if ('functionCall' in part && part.functionCall) {
+          if (!hasTools) {
+            contentBlocks.push({
+              text: `[Tool Call] ${part.functionCall.name} ${JSON.stringify(
+                part.functionCall.args || {},
+              )}`,
+            } as any);
+            continue;
+          }
           let rawId =
             (part.functionCall as any).id ||
             `tooluse_${Math.random().toString(36).substring(2, 9)}`;
@@ -721,6 +809,14 @@ export class BedrockContentGenerator implements ContentGenerator {
             },
           } as any);
         } else if ('functionResponse' in part && part.functionResponse) {
+          if (!hasTools) {
+            contentBlocks.push({
+              text: `[Tool Result] ${part.functionResponse.name}: ${JSON.stringify(
+                part.functionResponse.response ?? {},
+              )}`,
+            } as any);
+            continue;
+          }
           // Special handling for tool results in Bedrock Converse API
           // These are usually handled at the top level or via role 'user'
           let rawId =
@@ -900,10 +996,14 @@ export class BedrockContentGenerator implements ContentGenerator {
   }
 
   private mapResponse(response: any): GenerateContentResponse {
-    const text = response.output?.message?.content?.[0]?.text || '';
+    const contentBlocks = response.output?.message?.content || [];
+    const textParts = contentBlocks
+      .filter((c: any) => typeof c?.text === 'string' && c.text.length > 0)
+      .map((c: any) => c.text as string);
+    const responseText = textParts.join(' ').trim();
 
     const functionCalls: any[] = [];
-    const toolCalls = response.output?.message?.content
+    const toolCalls = contentBlocks
       ?.filter((c: any) => !!c.toolUse)
       .map((c: any) => {
         const args = this.unwrapAndDefaultArgs(c.toolUse.name, c.toolUse.input);
@@ -917,17 +1017,39 @@ export class BedrockContentGenerator implements ContentGenerator {
         return { functionCall: fnCall };
       });
 
+    const bedrockTurnState: BedrockTurnStateMetadata = {
+      isStreaming: false,
+      rawStopReason: response.stopReason || null,
+      responseText,
+      emittedToolCallCount: functionCalls.length,
+      stream: {
+        sawAssistantText: textParts.length > 0,
+        sawContentBlockStop: false,
+        sawToolUseStart: functionCalls.length > 0,
+        sawToolUseDelta: false,
+        sawToolUseComplete: functionCalls.length > 0,
+        emittedAssistantTextBlockCount: textParts.length,
+        emittedToolCallCount: functionCalls.length,
+      },
+    };
+
     return {
       candidates: [
         {
           content: {
             role: 'model',
-            parts: [...(text ? [{ text }] : []), ...(toolCalls || [])],
+            parts: [
+              ...textParts.map((text: string) => ({ text })),
+              ...(toolCalls || []),
+            ],
           },
           finishReason: this.mapFinishReason(response.stopReason),
         },
       ],
       functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
+      metadata: {
+        bedrockTurnState,
+      },
       usageMetadata: {
         promptTokenCount: response.usage?.inputTokens || 0,
         candidatesTokenCount: response.usage?.outputTokens || 0,
@@ -940,6 +1062,8 @@ export class BedrockContentGenerator implements ContentGenerator {
 
   private async *mapStreamResponse(
     stream: any,
+    promptId?: string,
+    requestId?: string,
   ): AsyncGenerator<GenerateContentResponse> {
     const toolCalls = new Map<
       number,
@@ -948,11 +1072,18 @@ export class BedrockContentGenerator implements ContentGenerator {
     let sawAssistantText = false;
     let sawContentBlockStop = false;
     let assembledFunctionCall = false;
+    let sawToolUseStart = false;
+    let sawToolUseDelta = false;
+    let completedToolUseCount = 0;
+    let emittedAssistantTextBlockCount = 0;
+    let emittedToolCallCount = 0;
+    const streamedTextParts: string[] = [];
 
     for await (const chunk of stream) {
       if (chunk.contentBlockStart?.start?.toolUse) {
+        sawToolUseStart = true;
         debugLogger.debug(
-          `[Bedrock Stream] toolUse START: index=${chunk.contentBlockStart.contentBlockIndex}, name=${chunk.contentBlockStart.start.toolUse.name}`,
+          `[Bedrock Stream] toolUse START: promptId=${promptId || 'unknown'} turnId=${requestId || 'unknown'} index=${chunk.contentBlockStart.contentBlockIndex}, name=${chunk.contentBlockStart.start.toolUse.name}`,
         );
         toolCalls.set(chunk.contentBlockStart.contentBlockIndex, {
           name: chunk.contentBlockStart.start.toolUse.name,
@@ -962,8 +1093,9 @@ export class BedrockContentGenerator implements ContentGenerator {
       }
 
       if (chunk.contentBlockDelta?.delta?.toolUse) {
+        sawToolUseDelta = true;
         debugLogger.debug(
-          `[Bedrock Stream] toolUse DELTA: index=${chunk.contentBlockDelta.contentBlockIndex}, input=${chunk.contentBlockDelta.delta.toolUse.input}`,
+          `[Bedrock Stream] toolUse DELTA: promptId=${promptId || 'unknown'} turnId=${requestId || 'unknown'} index=${chunk.contentBlockDelta.contentBlockIndex}, input=${chunk.contentBlockDelta.delta.toolUse.input}`,
         );
         const toolCall = toolCalls.get(
           chunk.contentBlockDelta.contentBlockIndex,
@@ -976,8 +1108,22 @@ export class BedrockContentGenerator implements ContentGenerator {
       if (chunk.contentBlockDelta?.delta?.text) {
         const text = chunk.contentBlockDelta.delta.text;
         sawAssistantText = true;
+        emittedAssistantTextBlockCount += 1;
+        streamedTextParts.push(text);
+
+        // Bedrock loop detection / circuit breaker
+        const fullTextSoFar = streamedTextParts.join('');
+        const loopCheck = detectMonologueRepetition(fullTextSoFar);
+        if (loopCheck.isLoop) {
+          debugLogger.warn(
+            `[Bedrock Stream] Loop detected: ${loopCheck.reason}. Breaking stream to protect token usage.`,
+          );
+          break;
+        }
+
         yield {
           candidates: [{ content: { role: 'model', parts: [{ text }] } }],
+          responseId: requestId,
         } as any as GenerateContentResponse;
       }
       if (chunk.contentBlockStop) {
@@ -995,6 +1141,8 @@ export class BedrockContentGenerator implements ContentGenerator {
             id: toolCall.id,
           };
           assembledFunctionCall = true;
+          completedToolUseCount += 1;
+          emittedToolCallCount += 1;
           yield {
             candidates: [
               {
@@ -1002,6 +1150,7 @@ export class BedrockContentGenerator implements ContentGenerator {
               },
             ],
             functionCalls: [fnCall],
+            responseId: requestId,
           } as any as GenerateContentResponse;
           toolCalls.delete(index);
         }
@@ -1025,12 +1174,38 @@ export class BedrockContentGenerator implements ContentGenerator {
           functionCalls.push(fnCall);
         }
 
+        emittedToolCallCount += functionCalls.length;
+
+        const bedrockTurnState: BedrockTurnStateMetadata = {
+          isStreaming: true,
+          rawStopReason: chunk.messageStop.stopReason || null,
+          responseText: streamedTextParts.join(' ').trim(),
+          emittedToolCallCount,
+          stream: {
+            sawAssistantText,
+            sawContentBlockStop,
+            sawToolUseStart,
+            sawToolUseDelta,
+            sawToolUseComplete:
+              completedToolUseCount > 0 || functionCalls.length > 0,
+            emittedAssistantTextBlockCount,
+            emittedToolCallCount,
+          },
+        };
+
         debugLogger.debug(
           '[Bedrock Stream] messageStop',
           JSON.stringify({
+            promptId: promptId || null,
+            turnId: requestId || null,
             stopReason: chunk.messageStop.stopReason || null,
             sawAssistantText,
             sawContentBlockStop,
+            sawToolUseStart,
+            sawToolUseDelta,
+            completedToolUseCount,
+            emittedAssistantTextBlockCount,
+            emittedToolCallCount,
             assembledFunctionCall:
               assembledFunctionCall || functionCalls.length > 0,
           }),
@@ -1043,6 +1218,10 @@ export class BedrockContentGenerator implements ContentGenerator {
             },
           ],
           functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
+          metadata: {
+            bedrockTurnState,
+          },
+          responseId: requestId,
         } as any as GenerateContentResponse;
       }
       if (chunk.metadata) {
@@ -1099,4 +1278,33 @@ export class BedrockContentGenerator implements ContentGenerator {
 
 interface ToolConfig {
   tools: Tool[];
+}
+
+function summarizeToolSchema(toolConfig: ToolConfig | undefined): string {
+  if (!toolConfig?.tools?.length) {
+    return 'No structured tool schemas are available for this request. If no tool is needed, provide only a direct final answer with no preamble.';
+  }
+
+  return toolConfig.tools
+    .map((tool) => {
+      const toolSpec = tool.toolSpec;
+      const jsonSchema = toolSpec?.inputSchema?.json as
+        | {
+            properties?: Record<string, unknown>;
+            required?: string[];
+          }
+        | undefined;
+      const propertyNames = Object.keys(jsonSchema?.properties || {});
+      const required = jsonSchema?.required || [];
+      return [
+        `- ${toolSpec?.name || 'unknown_tool'}`,
+        propertyNames.length > 0
+          ? `  properties: ${propertyNames.join(', ')}`
+          : '  properties: none declared',
+        required.length > 0
+          ? `  required: ${required.join(', ')}`
+          : '  required: none',
+      ].join('\n');
+    })
+    .join('\n');
 }

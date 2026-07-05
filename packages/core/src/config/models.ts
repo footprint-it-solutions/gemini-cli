@@ -108,7 +108,7 @@ export const VALID_GEMINI_MODELS = new Set([
   'bedrock/nova-micro',
   'bedrock/eu.amazon.nova-2-pro-v1:0',
   'bedrock/eu.amazon.nova-2-lite-v1:0',
-  'bedrock/eu.amazon.nova-2-micro-v1:0',
+  'bedrock/eu.amazon.nova-micro-v1:0',
 ]);
 
 /** @deprecated Use GEMINI_MODEL_ALIAS_AUTO instead. */
@@ -239,7 +239,7 @@ export function resolveModel(
     }
     case 'nova-micro':
     case 'bedrock/nova-micro': {
-      resolved = 'bedrock/eu.amazon.nova-2-micro-v1:0';
+      resolved = 'bedrock/eu.amazon.nova-micro-v1:0';
       break;
     }
     default: {

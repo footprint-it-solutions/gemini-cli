@@ -50,6 +50,7 @@ export interface ContentGenerator {
     request: GenerateContentParameters,
     userPromptId: string,
     role: LlmRole,
+    requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>>;
 
   countTokens(request: CountTokensParameters): Promise<CountTokensResponse>;
@@ -218,8 +219,8 @@ export async function createContentGeneratorConfig(
   }
 
   if (authType === AuthType.BEDROCK) {
-    // Bedrock usually uses AWS credentials (env vars or profile), 
-    // so we don't necessarily need an 'apiKey' field here, 
+    // Bedrock usually uses AWS credentials (env vars or profile),
+    // so we don't necessarily need an 'apiKey' field here,
     // but we can pass whatever is provided.
     return contentGeneratorConfig;
   }
@@ -360,12 +361,12 @@ export async function createContentGenerator(
     }
 
     if (config.authType === AuthType.BEDROCK) {
-      const resolvedRegion = process.env['AWS_BEDROCK_REGION'] || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
+      const resolvedRegion =
+        process.env['AWS_BEDROCK_REGION'] ||
+        process.env['AWS_REGION'] ||
+        process.env['AWS_DEFAULT_REGION'];
       return new LoggingContentGenerator(
-        new BedrockContentGenerator(
-          resolvedRegion,
-          config.awsProfile,
-        ),
+        new BedrockContentGenerator(resolvedRegion, config.awsProfile),
         gcConfig,
       );
     }

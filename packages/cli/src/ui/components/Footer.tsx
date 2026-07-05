@@ -440,12 +440,15 @@ export const Footer: React.FC = () => {
         let total = 0;
         for (const m of Object.values(uiState.sessionStats.metrics.models))
           total += m.tokens.total;
-        if (total > 0) {
+        const utilityTotal =
+          uiState.sessionStats.metrics.utilityTokens?.total || 0;
+        const grandTotal = total + utilityTotal;
+        if (grandTotal > 0) {
           const formatter = new Intl.NumberFormat('en-US', {
             notation: 'compact',
             maximumFractionDigits: 1,
           });
-          const formatted = formatter.format(total).toLowerCase();
+          const formatted = formatter.format(grandTotal).toLowerCase();
           addCol(
             id,
             header,

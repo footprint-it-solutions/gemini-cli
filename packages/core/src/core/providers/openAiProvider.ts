@@ -33,7 +33,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<GenerateContentResponse> {
-    const messages = this.mapContentsToMessages(this.ensureContentArray(request.contents), request.config?.systemInstruction as any);
+    const messages = this.mapContentsToMessages(
+      this.ensureContentArray(request.contents),
+      request.config?.systemInstruction as any,
+    );
     const tools = this.mapTools(request.config?.tools);
 
     const response = await this.client.chat.completions.create({
@@ -44,7 +47,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
       max_tokens: request.config?.maxOutputTokens,
       top_p: request.config?.topP,
       stop: request.config?.stopSequences,
-      response_format: request.config?.responseMimeType === 'application/json' ? { type: 'json_object' } : undefined,
+      response_format:
+        request.config?.responseMimeType === 'application/json'
+          ? { type: 'json_object' }
+          : undefined,
     });
 
     return this.ensureGenerateContentResponse(this.mapResponse(response));
@@ -54,8 +60,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
     request: GenerateContentParameters,
     _userPromptId: string,
     _role: LlmRole,
+    _requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
-    const messages = this.mapContentsToMessages(this.ensureContentArray(request.contents), request.config?.systemInstruction as any);
+    const messages = this.mapContentsToMessages(
+      this.ensureContentArray(request.contents),
+      request.config?.systemInstruction as any,
+    );
     const tools = this.mapTools(request.config?.tools);
 
     const stream = await this.client.chat.completions.create({
@@ -72,26 +82,32 @@ export class OpenAIContentGenerator implements ContentGenerator {
     return this.mapStreamResponse(stream);
   }
 
-  async countTokens(_request: CountTokensParameters): Promise<CountTokensResponse> {
+  async countTokens(
+    _request: CountTokensParameters,
+  ): Promise<CountTokensResponse> {
     // OpenAI doesn't have a direct token counting API like Gemini.
     // For now, return a placeholder or estimate.
     return { totalTokens: 0 };
   }
 
-  async embedContent(_request: EmbedContentParameters): Promise<EmbedContentResponse> {
+  async embedContent(
+    _request: EmbedContentParameters,
+  ): Promise<EmbedContentResponse> {
     throw new Error('Embeddings not yet implemented for OpenAI provider.');
   }
 
   private ensureContentArray(contents: any): Content[] {
     if (!contents) return [];
     if (Array.isArray(contents)) {
-      return contents.map(c => {
-        if (typeof c === 'string') return { role: 'user', parts: [{ text: c }] };
+      return contents.map((c) => {
+        if (typeof c === 'string')
+          return { role: 'user', parts: [{ text: c }] };
         if (c.text) return { role: 'user', parts: [c] };
         return c;
       });
     }
-    if (typeof contents === 'string') return [{ role: 'user', parts: [{ text: contents }] }];
+    if (typeof contents === 'string')
+      return [{ role: 'user', parts: [{ text: contents }] }];
     if (contents.text) return [{ role: 'user', parts: [contents] }];
     return [contents];
   }
@@ -101,7 +117,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
     return obj as GenerateContentResponse;
   }
 
-  private mapContentsToMessages(contents: Content[], systemInstruction?: string | Part | Part[] | Content): OpenAI.Chat.ChatCompletionMessageParam[] {
+  private mapContentsToMessages(
+    contents: Content[],
+    systemInstruction?: string | Part | Part[] | Content,
+  ): OpenAI.Chat.ChatCompletionMessageParam[] {
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
     if (systemInstruction) {
@@ -109,9 +128,13 @@ export class OpenAIContentGenerator implements ContentGenerator {
       if (typeof systemInstruction === 'string') {
         systemText = systemInstruction;
       } else if (Array.isArray(systemInstruction)) {
-        systemText = systemInstruction.map(p => (p as any).text || '').join('\n');
+        systemText = systemInstruction
+          .map((p) => (p as any).text || '')
+          .join('\n');
       } else if ('parts' in systemInstruction) {
-        systemText = (systemInstruction.parts as any[]).map(p => p.text || '').join('\n');
+        systemText = (systemInstruction.parts as any[])
+          .map((p) => p.text || '')
+          .join('\n');
       } else {
         systemText = (systemInstruction as Part).text || '';
       }
@@ -124,7 +147,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
     for (const content of contents) {
       const role = content.role === 'model' ? 'assistant' : 'user';
       const parts = content.parts || [];
-      
+
       // Handle tool calls/responses
       const toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
       let textContent = '';
@@ -144,35 +167,37 @@ export class OpenAIContentGenerator implements ContentGenerator {
           });
         }
         if (part.functionResponse) {
-            // functionResponse is handled by a separate message in OpenAI
-            messages.push({
-                role: 'tool',
-                tool_call_id: 'unknown', // This is a limitation: Gemini doesn't track tool call IDs in history the same way
-                content: JSON.stringify(part.functionResponse.response),
-            });
+          // functionResponse is handled by a separate message in OpenAI
+          messages.push({
+            role: 'tool',
+            tool_call_id: 'unknown', // This is a limitation: Gemini doesn't track tool call IDs in history the same way
+            content: JSON.stringify(part.functionResponse.response),
+          });
         }
       }
 
       if (textContent || toolCalls.length > 0) {
-          if (role === 'assistant') {
-              messages.push({
-                  role: 'assistant',
-                  content: textContent || null,
-                  tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-              } as any);
-          } else {
-              messages.push({
-                  role: 'user',
-                  content: textContent,
-              } as any);
-          }
+        if (role === 'assistant') {
+          messages.push({
+            role: 'assistant',
+            content: textContent || null,
+            tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+          } as any);
+        } else {
+          messages.push({
+            role: 'user',
+            content: textContent,
+          } as any);
+        }
       }
     }
 
     return messages;
   }
 
-  private mapTools(tools?: any[]): OpenAI.Chat.ChatCompletionTool[] | undefined {
+  private mapTools(
+    tools?: any[],
+  ): OpenAI.Chat.ChatCompletionTool[] | undefined {
     if (!tools || tools.length === 0) return undefined;
 
     const openAiTools: OpenAI.Chat.ChatCompletionTool[] = [];
@@ -232,7 +257,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
     };
   }
 
-  private async *mapStreamResponse(stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>): AsyncGenerator<GenerateContentResponse> {
+  private async *mapStreamResponse(
+    stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
+  ): AsyncGenerator<GenerateContentResponse> {
     for await (const chunk of stream) {
       const choice = chunk.choices[0];
       if (!choice) continue;
@@ -245,14 +272,16 @@ export class OpenAIContentGenerator implements ContentGenerator {
       if (choice.delta.tool_calls) {
         for (const tc of choice.delta.tool_calls) {
           if (tc.function) {
-             // Note: In streaming, tool calls come in chunks.
-             // This simple mapping might need refinement for full tool support in streams.
-             parts.push({
-                functionCall: {
-                  name: tc.function.name || '',
-                  args: tc.function.arguments ? JSON.parse(tc.function.arguments) : {},
-                },
-              });
+            // Note: In streaming, tool calls come in chunks.
+            // This simple mapping might need refinement for full tool support in streams.
+            parts.push({
+              functionCall: {
+                name: tc.function.name || '',
+                args: tc.function.arguments
+                  ? JSON.parse(tc.function.arguments)
+                  : {},
+              },
+            });
           }
         }
       }
@@ -274,11 +303,16 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
   private mapFinishReason(reason: string | null): any {
     switch (reason) {
-      case 'stop': return 'STOP';
-      case 'length': return 'MAX_TOKENS';
-      case 'tool_calls': return 'STOP'; // Or maybe FUNCTION_CALL if it existed in the target enum
-      case 'content_filter': return 'SAFETY';
-      default: return 'OTHER';
+      case 'stop':
+        return 'STOP';
+      case 'length':
+        return 'MAX_TOKENS';
+      case 'tool_calls':
+        return 'STOP'; // Or maybe FUNCTION_CALL if it existed in the target enum
+      case 'content_filter':
+        return 'SAFETY';
+      default:
+        return 'OTHER';
     }
   }
 }

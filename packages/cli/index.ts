@@ -14,6 +14,7 @@ import {
   getSpawnConfig,
   getScriptArgs,
 } from './src/utils/processUtils.js';
+import { runStartupBuildManifestVerification } from './src/utils/startupBuildVerification.js';
 
 export { GeminiSession } from './src/GeminiSession.js';
 
@@ -84,6 +85,11 @@ async function getMemoryNodeArgs(): Promise<string[]> {
 }
 
 export async function run() {
+  const startupBuildVerification = runStartupBuildManifestVerification();
+  if (startupBuildVerification.shouldExit) {
+    process.exit(1);
+  }
+
   if (!process.env['GEMINI_CLI_NO_RELAUNCH'] && !process.env['SANDBOX']) {
     // --- Lightweight Parent Process / Daemon ---
     // We avoid importing heavy dependencies here to save ~1.5s of startup time.
@@ -91,6 +97,14 @@ export async function run() {
     const scriptArgs = getScriptArgs();
     const memoryArgs = await getMemoryNodeArgs();
     const { spawnArgs, env: newEnv } = getSpawnConfig(memoryArgs, scriptArgs);
+
+    const startupBuildManifestResult =
+      process.env['GEMINI_CLI_STARTUP_BUILD_MANIFEST_RESULT'];
+    if (startupBuildManifestResult) {
+      newEnv['GEMINI_CLI_STARTUP_BUILD_MANIFEST_RESULT'] =
+        startupBuildManifestResult;
+    }
+    newEnv['GEMINI_CLI_STARTUP_BUILD_MANIFEST_VERIFIED'] = 'true';
 
     let latestAdminSettings: unknown = undefined;
 

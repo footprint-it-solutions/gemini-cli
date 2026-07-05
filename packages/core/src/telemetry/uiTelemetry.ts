@@ -17,6 +17,11 @@ import {
 
 import { ToolCallDecision } from './tool-call-decision.js';
 import { type ConversationRecord } from '../services/chatRecordingService.js';
+import {
+  coreEvents,
+  CoreEvent,
+  type UtilityTokenUsagePayload,
+} from '../utils/events.js';
 
 export type UiEvent =
   | (ApiResponseEvent & { 'event.name': typeof EVENT_API_RESPONSE })
@@ -88,6 +93,11 @@ export interface SessionMetrics {
     totalLinesAdded: number;
     totalLinesRemoved: number;
   };
+  utilityTokens?: {
+    input: number;
+    output: number;
+    total: number;
+  };
 }
 
 const createInitialRoleMetrics = (): RoleMetrics => ({
@@ -147,6 +157,27 @@ const createInitialMetrics = (): SessionMetrics => ({
 export class UiTelemetryService extends EventEmitter {
   #metrics: SessionMetrics = createInitialMetrics();
   #lastPromptTokenCount = 0;
+
+  constructor() {
+    super();
+    coreEvents.on(CoreEvent.UtilityTokenUsage, (payload) => {
+      this.addUtilityTokenUsage(payload);
+    });
+  }
+
+  addUtilityTokenUsage(payload: UtilityTokenUsagePayload) {
+    if (!this.#metrics.utilityTokens) {
+      this.#metrics.utilityTokens = { input: 0, output: 0, total: 0 };
+    }
+    this.#metrics.utilityTokens.input += payload.inputTokens;
+    this.#metrics.utilityTokens.output += payload.outputTokens;
+    this.#metrics.utilityTokens.total += payload.totalTokens;
+
+    this.emit('update', {
+      metrics: this.#metrics,
+      lastPromptTokenCount: this.#lastPromptTokenCount,
+    });
+  }
 
   addEvent(event: UiEvent) {
     switch (event['event.name']) {

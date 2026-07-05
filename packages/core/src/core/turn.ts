@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { randomUUID } from 'node:crypto';
+
 import {
   createUserContent,
   type Content,
@@ -241,6 +243,7 @@ export type ServerGeminiStreamEvent =
 // A turn manages the agentic loop turn within the server context.
 export class Turn {
   private callCounter = 0;
+  private readonly turnId = randomUUID();
 
   readonly pendingToolCalls: ToolCallRequestInfo[] = [];
   private debugResponses: GenerateContentResponse[] = [];
@@ -257,6 +260,10 @@ export class Turn {
     private readonly prompt_id: string,
   ) {}
 
+  getTurnId(): string {
+    return this.turnId;
+  }
+
   // The run method yields simpler events suitable for server logic
   async *run(
     modelConfigKey: ModelConfigKey,
@@ -266,9 +273,15 @@ export class Turn {
       displayContent?: PartListUnion;
       role?: LlmRole;
       apiHistoryOverride?: Content[];
+      requestId?: string;
     } = {},
   ): AsyncGenerator<ServerGeminiStreamEvent> {
-    const { displayContent, role = LlmRole.MAIN, apiHistoryOverride } = options;
+    const {
+      displayContent,
+      role = LlmRole.MAIN,
+      apiHistoryOverride,
+      requestId = this.turnId,
+    } = options;
     try {
       // Note: This assumes `sendMessageStream` yields events like
       // { type: StreamEventType.RETRY } or { type: StreamEventType.CHUNK, value: GenerateContentResponse }
@@ -280,6 +293,7 @@ export class Turn {
         role,
         displayContent,
         apiHistoryOverride,
+        requestId,
       );
 
       for await (const streamEvent of responseStream) {
@@ -449,7 +463,7 @@ export class Turn {
         typeof error === 'object' &&
         error !== null &&
         'status' in error &&
-        typeof (error).status === 'number'
+        typeof error.status === 'number'
           ? // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
             (error as { status: number }).status
           : undefined;

@@ -48,6 +48,7 @@ export interface NextSpeakerCheckOptions {
   authType?: string;
   modelOverride?: string;
   resolvedModel?: string;
+  turnId?: string;
 }
 
 function summarizeAssistantText(text: string): string {
@@ -134,6 +135,7 @@ export async function checkNextSpeaker(
   const checkerModel = resolveCheckerModel(options);
   const resolvedModel = options?.resolvedModel || checkerModel;
   const authType = options?.authType || 'unknown';
+  const turnId = options?.turnId || 'unknown';
 
   const contents: Content[] = [
     ...curatedHistory,
@@ -160,6 +162,7 @@ export async function checkNextSpeaker(
         '[NextSpeakerChecker] completed',
         JSON.stringify({
           promptId,
+          turnId,
           authType,
           checkerModel,
           resolvedModel,
@@ -174,6 +177,7 @@ export async function checkNextSpeaker(
       '[NextSpeakerChecker] invalid response',
       JSON.stringify({
         promptId,
+        turnId,
         authType,
         checkerModel,
         resolvedModel,
@@ -188,6 +192,7 @@ export async function checkNextSpeaker(
       '[NextSpeakerChecker] execution failed',
       JSON.stringify({
         promptId,
+        turnId,
         authType,
         checkerModel,
         resolvedModel,

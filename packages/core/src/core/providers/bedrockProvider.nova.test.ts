@@ -228,6 +228,183 @@ describe('BedrockContentGenerator (Nova Support)', () => {
         },
       });
     });
+
+    it('should serialize historical tool calls and results as text when no tools are configured', () => {
+      const contents = [
+        {
+          role: 'model',
+          parts: [
+            {
+              functionCall: {
+                name: 'read_file',
+                args: { file_path: 'src/app.ts', start_line: 1, end_line: 20 },
+                id: 'call_123',
+              },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: 'read_file',
+                response: { output: 'file contents' },
+                id: 'call_123',
+              },
+            },
+          ],
+        },
+      ];
+
+      const messages = (
+        generator as unknown as {
+          mapContentsToMessages: (c: any, t: boolean) => any;
+        }
+      ).mapContentsToMessages(contents, false);
+
+      expect(messages).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              text: '[Tool Call] read_file {"file_path":"src/app.ts","start_line":1,"end_line":20}',
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              text: '[Tool Result] read_file: {"output":"file contents"}',
+            },
+          ],
+        },
+      ]);
+    });
+
+    it('should add Bedrock-specific guidance to the read_file tool description', () => {
+      const tools = [
+        {
+          functionDeclarations: [
+            {
+              name: 'read_file',
+              description: 'Reads a file.',
+              parameters: { properties: {} },
+            },
+          ],
+        },
+      ];
+
+      const toolConfig = (
+        generator as unknown as { mapTools: (tools: any[] | undefined) => any }
+      ).mapTools(tools);
+
+      expect(toolConfig.tools[0].toolSpec.description).toContain(
+        'prefer a single full-file read without start_line or end_line',
+      );
+      expect(toolConfig.tools[0].toolSpec.description).toContain(
+        'prefer broader targeted ranges or parallel reads over many tiny sequential range reads',
+      );
+    });
+
+    it('should add Bedrock-specific guidance to the read_many_files tool description', () => {
+      const tools = [
+        {
+          functionDeclarations: [
+            {
+              name: 'read_many_files',
+              description: 'Reads many files.',
+              parameters: { properties: {} },
+            },
+          ],
+        },
+      ];
+
+      const toolConfig = (
+        generator as unknown as { mapTools: (tools: any[] | undefined) => any }
+      ).mapTools(tools);
+
+      expect(toolConfig.tools[0].toolSpec.description).toContain(
+        'prefer this tool for repository overviews, broad codebase analysis, and reading multiple related files',
+      );
+    });
+  });
+
+  describe('appendToolHint', () => {
+    it('should strip Explain Before Acting style pre-tool narration mandates for Bedrock', () => {
+      const system = [
+        {
+          text: `- **Explain Before Acting:** Never call tools in silence. You MUST provide a concise, one-sentence explanation of your intent or strategy immediately before executing tool calls.\n- **No Chitchat:** Avoid conversational filler, preambles ("Okay, I will now..."), or postambles ("I have finished the changes...") unless they are part of the 'Explain Before Acting' mandate.\n- **Explain Critical Commands:** Before executing commands with \`run_shell_command\` that modify the file system, codebase, or system state, you *must* provide a brief explanation of the command's purpose and potential impact. You MUST NOT use \`ask_user\` to ask for permission to run a command.`,
+        },
+      ];
+
+      const result = (
+        generator as unknown as {
+          appendToolHint: (
+            system: Array<{ text: string }>,
+          ) => Array<{ text: string }>;
+        }
+      ).appendToolHint(system);
+
+      expect(result[0].text).not.toContain('Explain Before Acting');
+      expect(result[0].text).not.toContain('No Chitchat');
+      expect(result[0].text).not.toContain('Explain Critical Commands');
+      expect(result.at(-1)?.text).toContain('STRUCTURED OUTPUT CONTRACT');
+      expect(result.at(-1)?.text).toContain(
+        'avoid interim narration like "let me keep reading"',
+      );
+      expect(result.at(-1)?.text).toContain(
+        "prefer a single full-file 'read_file' call without line bounds",
+      );
+      expect(result.at(-1)?.text).toContain(
+        "prefer 'read_many_files' over a long series of one-file or one-slice reads",
+      );
+      expect(result.at(-1)?.text).toContain(
+        'If you need to provide code in assistant text, start with the code immediately.',
+      );
+      expect(result.at(-1)?.text).toContain(
+        'prefer modifying files with tools instead of pasting long replacement code into chat',
+      );
+    });
+
+    it('should add structured output instructions even when there is no existing system prompt', () => {
+      const tools = {
+        tools: [
+          {
+            toolSpec: {
+              name: 'classify_bedrock_turn',
+              description: 'Classify the turn',
+              inputSchema: {
+                json: {
+                  type: 'object',
+                  properties: {
+                    decision: { type: 'string' },
+                    confidence: { type: 'string' },
+                  },
+                  required: ['decision'],
+                },
+              },
+            },
+          },
+        ],
+      };
+
+      const result = (
+        generator as unknown as {
+          appendToolHint: (
+            system: Array<{ text: string }> | undefined,
+            toolConfig?: unknown,
+          ) => Array<{ text: string }>;
+        }
+      ).appendToolHint(undefined, tools);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].text).toContain('STRUCTURED OUTPUT CONTRACT');
+      expect(result[0].text).toContain('classify_bedrock_turn');
+      expect(result[0].text).toContain('properties: decision, confidence');
+      expect(result[0].text).toContain('required: decision');
+    });
   });
 
   describe('mapResponse', () => {
@@ -245,7 +422,7 @@ describe('BedrockContentGenerator (Nova Support)', () => {
       const response = (
         generator as unknown as { mapResponse: (r: any) => any }
       ).mapResponse(bedrockResponse);
-      expect(response).toEqual({
+      expect(response).toMatchObject({
         candidates: [
           {
             content: {
@@ -290,6 +467,37 @@ describe('BedrockContentGenerator (Nova Support)', () => {
           name: 'get_weather',
           args: { location: 'Paris' },
           id: 'tool_123',
+        },
+      });
+    });
+
+    it('should preserve multiple assistant text blocks and attach Bedrock turn-state metadata', () => {
+      const bedrockResponse = {
+        output: {
+          message: {
+            role: 'assistant',
+            content: [{ text: 'First block.' }, { text: 'Second block:' }],
+          },
+        },
+        stopReason: 'end_turn',
+      };
+
+      const response = (
+        generator as unknown as { mapResponse: (r: any) => any }
+      ).mapResponse(bedrockResponse);
+
+      expect((response.candidates as any)[0].content.parts).toEqual([
+        { text: 'First block.' },
+        { text: 'Second block:' },
+      ]);
+      expect((response as any).metadata.bedrockTurnState).toMatchObject({
+        isStreaming: false,
+        rawStopReason: 'end_turn',
+        responseText: 'First block. Second block:',
+        emittedToolCallCount: 0,
+        stream: {
+          sawAssistantText: true,
+          emittedAssistantTextBlockCount: 2,
         },
       });
     });
@@ -377,6 +585,7 @@ describe('BedrockContentGenerator (Nova Support)', () => {
         } as any,
         'prompt-456',
         'user' as any,
+        'turn-456',
       );
 
       const chunks: GenerateContentResponse[] = [];
@@ -385,13 +594,25 @@ describe('BedrockContentGenerator (Nova Support)', () => {
       }
 
       expect((chunks[1].candidates as any)[0].finishReason).toBe('OTHER');
+      expect(chunks[0].responseId).toBe('turn-456');
+      expect(chunks[1].responseId).toBe('turn-456');
       expect(debugSpy).toHaveBeenCalledWith(
         '[Bedrock Stream] messageStop',
-        expect.stringContaining('"stopReason":"mystery_reason"'),
+        expect.stringContaining('"turnId":"turn-456"'),
       );
       expect(warnSpy).toHaveBeenCalledWith(
         "[Bedrock] Unmapped stopReason received from Bedrock API: 'mystery_reason'. Falling back to 'OTHER'.",
       );
+      expect((chunks[1] as any).metadata.bedrockTurnState).toMatchObject({
+        isStreaming: true,
+        rawStopReason: 'mystery_reason',
+        responseText: 'I will now do the thing:',
+        stream: {
+          sawAssistantText: true,
+          sawContentBlockStop: false,
+          emittedAssistantTextBlockCount: 1,
+        },
+      });
     });
   });
 });

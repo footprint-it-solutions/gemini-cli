@@ -62,6 +62,7 @@ import {
   type TrustedFoldersError,
 } from './config/trustedFolders.js';
 import { getStartupWarnings } from './utils/startupWarnings.js';
+import { consumeStartupBuildManifestResult } from './utils/startupBuildVerification.js';
 import { getUserStartupWarnings } from './utils/userStartupWarnings.js';
 import { ConsolePatcher } from './ui/utils/ConsolePatcher.js';
 import { runNonInteractive } from './nonInteractiveCli.js';
@@ -146,9 +147,7 @@ export function getNodeMemoryArgs(isDebugMode: boolean): string[] {
   // out-of-memory crashes during high native-handle concurrency.
   // Note: Only supported in specific Node.js versions compiled with V8 Sandbox enabled.
   const eptFlag = `--max-external-pointer-table-size=${DEFAULT_EPT_SIZE}`;
-  const isV8SandboxEnabled =
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-type-assertion
-    (process.config?.variables as any)?.v8_enable_sandbox === 1;
+  const isV8SandboxEnabled = process.config?.variables?.v8_enable_sandbox === 1;
 
   if (
     isV8SandboxEnabled &&
@@ -186,7 +185,7 @@ export function setupUnhandledRejectionHandler() {
 This is an unexpected error. Please file a bug report using the /bug tool.
 CRITICAL: Unhandled Promise Rejection!
 =========================================
-Reason: ${reason}${
+Reason: ${reason instanceof Error ? reason.message : String(reason)}${
       reason instanceof Error && reason.stack
         ? `
 Stack trace:
@@ -240,12 +239,13 @@ export async function resolveSessionId(
       );
 
       // Add a single info message to the history to confirm the import
-      sessionData.messages.unshift({
+      const importMessage: MessageRecord = {
         id: `import-${now}`,
         type: 'info',
         content: `Imported session from ${sessionFileArg}`,
         timestamp: isoNow,
-      } as MessageRecord);
+      };
+      sessionData.messages.unshift(importMessage);
 
       const newSessionId = createSessionId();
       sessionData.sessionId = newSessionId;
@@ -377,6 +377,19 @@ export async function main() {
   const loadSettingsHandle = startupProfiler.start('load_settings');
   const settings = loadSettings();
   loadSettingsHandle?.end();
+
+  const startupBuildVerification = consumeStartupBuildManifestResult();
+  if (
+    startupBuildVerification &&
+    startupBuildVerification.status !== 'skipped'
+  ) {
+    const logMethod =
+      startupBuildVerification.status === 'failed' ? 'warn' : 'debug';
+    debugLogger[logMethod](
+      '[StartupBuildVerification]',
+      JSON.stringify(startupBuildVerification),
+    );
+  }
 
   // If a worktree is requested and enabled, set it up early.
   // This must be awaited before any other async tasks that depend on CWD (like loadCliConfig)
@@ -644,9 +657,8 @@ export async function main() {
     adminControlsListner.setConfig(config);
 
     if (config.isInteractive() && settings.merged.general.devtools) {
-      const { setupInitialActivityLogger } = await import(
-        './utils/devtoolsService.js'
-      );
+      const { setupInitialActivityLogger } =
+        await import('./utils/devtoolsService.js');
       setupInitialActivityLogger(config);
     }
 

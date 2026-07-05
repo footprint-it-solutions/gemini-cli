@@ -72,8 +72,26 @@ import {
   type ApprovalModeChangedPayload,
 } from '../utils/events.js';
 import { initializeContextManager } from '../context/initializer.js';
+import {
+  type BedrockContinuationState,
+  type BedrockTurnState,
+  type BedrockTurnClassifierResult,
+  type BedrockProviderTurnStateMetadata,
+  type BedrockTurnTextKind,
+  checkNextSpeakerBedrock,
+  shouldUseBedrockContinuationBudget,
+  shouldContinueBedrockFallbackChain,
+  detectMonologueRepetition,
+} from '../bedrock/bedrockContinuation.js';
 
 const MAX_TURNS = 100;
+
+interface ToolCallSummary {
+  name: string;
+  filePath?: string;
+  startLine?: number;
+  endLine?: number;
+}
 
 type BeforeAgentHookReturn =
   | {
@@ -90,6 +108,7 @@ type BeforeAgentHookReturn =
 export class GeminiClient {
   private chat?: GeminiChat;
   private sessionTurnCount = 0;
+  private readonly fallbackTurnIds = new WeakMap<object, string>();
 
   private readonly loopDetector: LoopDetectionService;
   private readonly compressionService: ChatCompressionService;
@@ -165,25 +184,230 @@ export class GeminiClient {
     );
   }
 
-  private shouldFallbackContinueBedrockTurn(responseText: string): boolean {
-    const normalized = responseText.replace(/\s+/g, ' ').trim();
-    if (!normalized) {
-      return false;
+  private getRecentToolCallSummaries(limit = 3): ToolCallSummary[] {
+    if (!this.isInitialized()) {
+      return [];
     }
-    if (/[?؟]$/.test(normalized)) {
-      return false;
+
+    const history = this.getChat().getHistory();
+    const summaries: ToolCallSummary[] = [];
+
+    for (let i = history.length - 1; i >= 0 && summaries.length < limit; i--) {
+      const content = history[i];
+      const parts = content.parts || [];
+
+      for (let j = parts.length - 1; j >= 0 && summaries.length < limit; j--) {
+        const functionCall = parts[j].functionCall;
+        if (!functionCall?.name) {
+          continue;
+        }
+
+        const rawArgs = functionCall.args;
+        const args: Record<string, unknown> = {};
+        if (rawArgs && typeof rawArgs === 'object') {
+          for (const [key, val] of Object.entries(rawArgs)) {
+            args[key] = val;
+          }
+        }
+
+        const filePathVal = args['file_path'];
+        const startLineVal = args['start_line'];
+        const endLineVal = args['end_line'];
+
+        summaries.push({
+          name: functionCall.name,
+          filePath: typeof filePathVal === 'string' ? filePathVal : undefined,
+          startLine:
+            typeof startLineVal === 'number' ? startLineVal : undefined,
+          endLine: typeof endLineVal === 'number' ? endLineVal : undefined,
+        });
+      }
     }
-    const lower = normalized.toLowerCase();
-    const continuationPatterns = [
-      /:$/,
-      /\bi will now\b/,
-      /\bi'll now\b/,
-      /\blet me\b/,
-      /\blet's proceed\b/,
-      /\bnext,? i'll\b/,
-      /\bi(?:'|’)m going to\b/,
-    ];
-    return continuationPatterns.some((pattern) => pattern.test(lower));
+
+    return summaries;
+  }
+
+  private getToolProgressFingerprint(
+    recentToolCalls: ToolCallSummary[],
+  ): string {
+    return (
+      recentToolCalls
+        .slice(0, 3)
+        .map(
+          (call) =>
+            `${call.name}:${call.filePath ?? ''}:${call.startLine ?? ''}:${call.endLine ?? ''}`,
+        )
+        .join('|') || 'no-tools'
+    );
+  }
+
+  private getLatestBedrockProviderTurnStateMetadata(
+    turn: Turn,
+  ): BedrockProviderTurnStateMetadata | undefined {
+    for (const response of [...turn.getDebugResponses()].reverse()) {
+      const metadata = (
+        response as GenerateContentResponse & {
+          metadata?: { bedrockTurnState?: BedrockProviderTurnStateMetadata };
+        }
+      ).metadata;
+      if (metadata?.bedrockTurnState) {
+        return metadata.bedrockTurnState;
+      }
+    }
+
+    return undefined;
+  }
+
+  private classifyBedrockTurnState(
+    turnState: BedrockTurnState,
+  ): BedrockTurnClassifierResult {
+    const loopCheck = detectMonologueRepetition(turnState.responseText);
+    if (loopCheck.isLoop) {
+      return {
+        decision: 'ask_user',
+        confidence: 'high',
+        signals: ['repetition_loop_detected'],
+        reason: `Repetition loop detected: ${loopCheck.reason}. Breaking loop and asking user for instruction.`,
+        source: 'deterministic',
+      };
+    }
+
+    if (turnState.pendingToolCalls > 0) {
+      return {
+        decision: 'stop',
+        confidence: 'high',
+        signals: ['pending_tool_calls'],
+        reason:
+          'A tool call is already pending, so no continuation fallback should run.',
+        source: 'deterministic',
+      };
+    }
+
+    if (turnState.endsWithQuestion) {
+      return {
+        decision: 'ask_user',
+        confidence: 'high',
+        signals: ['user_question'],
+        reason: 'The assistant ended with a user-directed question.',
+        source: 'deterministic',
+      };
+    }
+
+    if (turnState.finishReason === 'MALFORMED_MODEL_OUTPUT') {
+      return {
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['malformed_model_output'],
+        reason:
+          'The model reported malformed output, which should trigger continuation recovery.',
+        source: 'deterministic',
+      };
+    }
+
+    if (turnState.endsWithColon) {
+      return {
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['ends_with_colon'],
+        reason:
+          'The response ended with a trailing colon, suggesting a truncated tool call output.',
+        source: 'deterministic',
+      };
+    }
+
+    return {
+      decision: 'uncertain',
+      confidence: 'low',
+      signals: [
+        `text_kind:${turnState.textKind}`,
+        ...(turnState.endsWithColon ? ['trailing_colon'] : []),
+        ...(turnState.rawStopReason
+          ? [`raw_stop_reason:${turnState.rawStopReason}`]
+          : []),
+        `finish_reason:${turnState.finishReason || 'unknown'}`,
+      ],
+      reason:
+        'The turn is ambiguous after applying deterministic safety guards and needs Nova Micro classification.',
+      source: 'deterministic',
+    };
+  }
+
+  private buildBedrockTurnState(
+    turn: Turn,
+    promptId: string,
+    turnId: string,
+  ): BedrockTurnState {
+    const providerMetadata =
+      this.getLatestBedrockProviderTurnStateMetadata(turn);
+    const responseText = (
+      turn.getResponseText() ||
+      providerMetadata?.responseText ||
+      ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
+    const recentToolCalls = this.getRecentToolCallSummaries();
+    const currentToolFingerprint =
+      this.getToolProgressFingerprint(recentToolCalls);
+    const endsWithQuestion = /[?؟]$/.test(responseText);
+    const endsWithColon = /:$/.test(responseText);
+
+    let textKind: BedrockTurnTextKind = 'unknown';
+    if (!responseText) {
+      textKind = 'empty';
+    } else if (endsWithQuestion) {
+      textKind = 'question';
+    } else if (endsWithColon) {
+      textKind = 'continuation_preamble';
+    } else {
+      textKind = 'answer';
+    }
+
+    const appearsIncomplete =
+      textKind === 'continuation_preamble' ||
+      turn.finishReason?.toString() === 'MALFORMED_MODEL_OUTPUT';
+
+    const turnState: BedrockTurnState = {
+      promptId,
+      turnId,
+      finishReason: turn.finishReason?.toString() || '',
+      rawStopReason: providerMetadata?.rawStopReason || null,
+      responseText,
+      recentToolCalls,
+      currentToolFingerprint,
+      pendingToolCalls: turn.pendingToolCalls.length,
+      textKind,
+      decision: 'uncertain',
+      appearsIncomplete,
+      endsWithColon,
+      endsWithQuestion,
+      providerMetadata,
+    };
+
+    turnState.decision = this.classifyBedrockTurnState(turnState).decision;
+    return turnState;
+  }
+
+  private getTurnCorrelationId(turn: Turn, promptId: string): string {
+    if (
+      typeof (turn as Turn & { getTurnId?: () => string }).getTurnId ===
+      'function'
+    ) {
+      return (turn as Turn & { getTurnId: () => string }).getTurnId();
+    }
+
+    if (typeof turn === 'object' && turn !== null) {
+      const existingId = this.fallbackTurnIds.get(turn);
+      if (existingId) {
+        return existingId;
+      }
+
+      const fallbackId = `${promptId}-turn-${randomUUID()}`;
+      this.fallbackTurnIds.set(turn, fallbackId);
+      return fallbackId;
+    }
+
+    return `${promptId}-turn-${randomUUID()}`;
   }
 
   clearCurrentSequenceModel(): void {
@@ -658,7 +882,9 @@ export class GeminiClient {
     boundedTurns: number,
     displayContent?: PartListUnion,
     stopHookActive: boolean = false,
-    bedrockFallbackContinuationUsed: boolean = false,
+    bedrockContinuationState: BedrockContinuationState = {
+      fallbackContinuationCount: 0,
+    },
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
     // Re-initialize turn (it was empty before if in loop, or new instance)
     let turn = new Turn(this.getChat(), prompt_id);
@@ -842,10 +1068,12 @@ export class GeminiClient {
     // Update tools with the final modelId to ensure model-dependent descriptions are used.
     await this.setTools(modelToUse);
 
+    const turnId = this.getTurnCorrelationId(turn, prompt_id);
     const resultStream = turn.run(modelConfigKey, request, signal, {
       displayContent,
       role: LlmRole.MAIN,
       apiHistoryOverride,
+      requestId: turnId,
     });
     let isError = false;
 
@@ -921,12 +1149,135 @@ export class GeminiClient {
           ? JSON.stringify(turn.pendingToolCalls)
           : 'none';
       debugLogger.error(
-        `[Bedrock] Turn ended with malformed_model_output. Captured text: ${forensicResponseText}. Captured tool calls: ${toolCallsStr}`,
+        `[Bedrock] Turn ended with malformed_model_output. promptId=${prompt_id} turnId=${turnId} Captured text: ${forensicResponseText}. Captured tool calls: ${toolCallsStr}`,
       );
     }
 
     if (!turn.pendingToolCalls.length && signal && !signal.aborted) {
-      if (
+      if (this.isBedrockAuth()) {
+        if (!this.config.getQuotaErrorOccurred()) {
+          const responseText = turn.getResponseText() || '';
+          const bedrockTurnState = this.buildBedrockTurnState(
+            turn,
+            prompt_id,
+            turnId,
+          );
+          const deterministicClassifier =
+            this.classifyBedrockTurnState(bedrockTurnState);
+          const microClassifier =
+            deterministicClassifier?.decision === 'uncertain'
+              ? await checkNextSpeakerBedrock(
+                  bedrockTurnState,
+                  signal,
+                  prompt_id,
+                  this.config.getAwsProfile?.(),
+                )
+              : null;
+          const continuationClassifier =
+            microClassifier || deterministicClassifier;
+          const shouldFallbackContinue =
+            continuationClassifier?.decision === 'continue' || false;
+          const continuationAction =
+            continuationClassifier?.decision === 'continue'
+              ? 'continue'
+              : continuationClassifier?.decision === 'ask_user'
+                ? 'wait_for_user'
+                : 'stop';
+
+          debugLogger.debug(
+            '[GeminiClient] bedrock continuation evaluation',
+            JSON.stringify({
+              promptId: prompt_id,
+              turnId,
+              finishReason: turn.finishReason?.toString() || '',
+              rawStopReason: bedrockTurnState.rawStopReason,
+              responseText: responseText.slice(0, 160),
+              textKind: bedrockTurnState.textKind,
+              recentToolCalls: bedrockTurnState.recentToolCalls,
+              fallbackContinuationCount:
+                bedrockContinuationState.fallbackContinuationCount,
+              currentToolFingerprint: bedrockTurnState.currentToolFingerprint,
+              fallbackBudgetRemaining: shouldUseBedrockContinuationBudget(
+                bedrockContinuationState,
+              ),
+              fallbackProgressAllowed: shouldContinueBedrockFallbackChain(
+                bedrockContinuationState,
+                bedrockTurnState.currentToolFingerprint,
+              ),
+              deterministicClassifier,
+              microClassifier,
+              continuationAction,
+              shouldFallbackContinue,
+            }),
+          );
+
+          if (
+            microClassifier &&
+            continuationAction !== 'continue' &&
+            (bedrockTurnState.textKind === 'continuation_preamble' ||
+              bedrockTurnState.endsWithColon ||
+              bedrockTurnState.hasContinuationCue ||
+              bedrockTurnState.isReadFlowNarration)
+          ) {
+            debugLogger.warn(
+              '[GeminiClient] Bedrock micro classifier declined continuation for a continuation-like turn',
+              JSON.stringify({
+                promptId: prompt_id,
+                turnId,
+                responseText: responseText.slice(0, 160),
+                textKind: bedrockTurnState.textKind,
+                rawStopReason: bedrockTurnState.rawStopReason,
+                microClassifier,
+                continuationAction,
+              }),
+            );
+          }
+
+          if (
+            shouldUseBedrockContinuationBudget(bedrockContinuationState) &&
+            shouldContinueBedrockFallbackChain(
+              bedrockContinuationState,
+              bedrockTurnState.currentToolFingerprint,
+            ) &&
+            shouldFallbackContinue
+          ) {
+            debugLogger.log(
+              '[GeminiClient] Bedrock fallback continuation triggered',
+              JSON.stringify({
+                promptId: prompt_id,
+                turnId,
+                finishReason: turn.finishReason?.toString() || '',
+                responseText: responseText.slice(0, 160),
+                rawStopReason: bedrockTurnState.rawStopReason,
+                textKind: bedrockTurnState.textKind,
+                recentToolCalls: bedrockTurnState.recentToolCalls,
+                classifier: continuationClassifier,
+                fallbackContinuationCount:
+                  bedrockContinuationState.fallbackContinuationCount,
+                currentToolFingerprint: bedrockTurnState.currentToolFingerprint,
+                nextFallbackContinuationCount:
+                  bedrockContinuationState.fallbackContinuationCount + 1,
+              }),
+            );
+            const nextRequest = [{ text: 'Please continue.' }];
+            turn = yield* this.sendMessageStream(
+              nextRequest,
+              signal,
+              prompt_id,
+              boundedTurns - 1,
+              displayContent,
+              stopHookActive,
+              {
+                fallbackContinuationCount:
+                  bedrockContinuationState.fallbackContinuationCount + 1,
+                lastFallbackToolFingerprint:
+                  bedrockTurnState.currentToolFingerprint,
+              },
+            );
+            return turn;
+          }
+        }
+      } else if (
         !this.config.getQuotaErrorOccurred() &&
         !this.config.getSkipNextSpeakerCheck()
       ) {
@@ -936,7 +1287,21 @@ export class GeminiClient {
           this.config.getBaseLlmClient(),
           signal,
           prompt_id,
-          checkerConfig,
+          {
+            ...checkerConfig,
+            turnId,
+          },
+        );
+        debugLogger.debug(
+          '[GeminiClient] next speaker decision',
+          JSON.stringify({
+            promptId: prompt_id,
+            turnId,
+            finishReason: turn.finishReason?.toString() || '',
+            nextSpeaker: nextSpeakerCheck?.next_speaker || null,
+            fallbackContinuationCount:
+              bedrockContinuationState.fallbackContinuationCount,
+          }),
         );
         logNextSpeakerCheck(
           this.config,
@@ -955,35 +1320,7 @@ export class GeminiClient {
             boundedTurns - 1,
             displayContent,
             stopHookActive,
-            true,
-          );
-          return turn;
-        }
-
-        const responseText = turn.getResponseText() || '';
-        if (
-          this.isBedrockAuth() &&
-          !bedrockFallbackContinuationUsed &&
-          (turn.finishReason?.toString() === 'MALFORMED_MODEL_OUTPUT' ||
-            this.shouldFallbackContinueBedrockTurn(responseText))
-        ) {
-          debugLogger.warn(
-            '[GeminiClient] Bedrock fallback continuation triggered',
-            JSON.stringify({
-              promptId: prompt_id,
-              finishReason: turn.finishReason?.toString() || '',
-              responseText: responseText.slice(0, 160),
-            }),
-          );
-          const nextRequest = [{ text: 'Please continue.' }];
-          turn = yield* this.sendMessageStream(
-            nextRequest,
-            signal,
-            prompt_id,
-            boundedTurns - 1,
-            displayContent,
-            stopHookActive,
-            true,
+            bedrockContinuationState,
           );
           return turn;
         }
@@ -999,7 +1336,9 @@ export class GeminiClient {
     turns: number = MAX_TURNS,
     displayContent?: PartListUnion,
     stopHookActive: boolean = false,
-    bedrockFallbackContinuationUsed: boolean = false,
+    bedrockContinuationState: BedrockContinuationState = {
+      fallbackContinuationCount: 0,
+    },
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
     this.config.resetTurn();
 
@@ -1055,7 +1394,7 @@ export class GeminiClient {
         boundedTurns,
         displayContent,
         stopHookActive,
-        bedrockFallbackContinuationUsed,
+        bedrockContinuationState,
       );
 
       // Fire AfterAgent hook if we have a turn and no pending tools
