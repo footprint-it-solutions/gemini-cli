@@ -124,6 +124,7 @@ const cliConfig = {
   entryPoints: { gemini: 'packages/cli/index.ts' },
   outdir: 'bundle',
   splitting: true,
+  preserveSymlinks: true,
   define: {
     __filename: '__chunk_filename',
     __dirname: '__chunk_dirname',
@@ -138,12 +139,6 @@ const cliConfig = {
   },
   plugins: createWasmPlugins(),
   alias: {
-    react$: require.resolve('react', {
-      paths: [path.resolve(__dirname, 'packages/cli')],
-    }),
-    'react-dom$': require.resolve('react-dom', {
-      paths: [path.resolve(__dirname, 'packages/cli')],
-    }),
     'is-in-ci': path.resolve(__dirname, 'packages/cli/src/patches/is-in-ci.ts'),
     'https-proxy-agent': path.resolve(
       __dirname,
