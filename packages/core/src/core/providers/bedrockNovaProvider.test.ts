@@ -464,4 +464,108 @@ describe('BedrockNovaContentGenerator - Content Generator', () => {
       'tooluse_KfDgpsRapEXpRCT6klvI8d',
     );
   });
+
+  it('should deduplicate identical parallel tool calls in mapResponse', () => {
+    const response = {
+      output: {
+        message: {
+          content: [
+            {
+              toolUse: {
+                toolUseId: 'tooluse_abc',
+                name: 'nova_response_schema',
+                input: {
+                  thoughts: 'Thoughts...',
+                  text: 'Text...',
+                  tool_calls: [
+                    {
+                      name: 'list_directory',
+                      arguments_json: '{"dir_path":"/home"}',
+                    },
+                    {
+                      name: 'list_directory',
+                      arguments_json: '{"dir_path":"/home"}',
+                    },
+                    {
+                      name: 'read_file',
+                      arguments_json: '{"file_path":"GEMINI.md"}',
+                    },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      },
+    };
+
+    // @ts-ignore
+    const mapped = generator.mapResponse(response);
+    const functionCalls = mapped.functionCalls || [];
+
+    // There should be exactly two functionCalls because the list_directory calls are identical duplicates
+    expect(functionCalls.length).toBe(2);
+    expect(functionCalls[0].name).toBe('list_directory');
+    expect(functionCalls[0].args).toEqual({ dir_path: '/home' });
+    expect(functionCalls[1].name).toBe('read_file');
+    expect(functionCalls[1].args).toEqual({ file_path: 'GEMINI.md' });
+  });
+
+  it('should correctly output multiple synthetic toolResult blocks across multiple turns if needed', () => {
+    const contents: any[] = [
+      {
+        role: 'user',
+        parts: [{ text: 'Turn 1' }],
+      },
+      {
+        role: 'model',
+        parts: [
+          {
+            text: 'Response 1',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [{ text: 'Turn 2' }],
+      },
+      {
+        role: 'model',
+        parts: [
+          {
+            text: 'Response 2',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [{ text: 'Turn 3' }],
+      },
+    ];
+
+    // @ts-ignore
+    const mappedMessages = generator.mapContentsToMessages(contents);
+
+    // Should generate user, assistant, user, assistant, user
+    expect(mappedMessages.length).toBe(5);
+
+    expect(mappedMessages[0].role).toBe('user');
+    expect(mappedMessages[1].role).toBe('assistant');
+    expect(mappedMessages[2].role).toBe('user');
+    expect(mappedMessages[3].role).toBe('assistant');
+    expect(mappedMessages[4].role).toBe('user');
+
+    // Both the 2nd user message (Turn 2) and the 3rd user message (Turn 3) must have synthetic tool results for 'tooluse_synthetic'
+    const userMessage2 = mappedMessages[2];
+    const hasResult2 = userMessage2.content?.some(
+      (b: any) => b.toolResult?.toolUseId === 'tooluse_synthetic',
+    );
+    expect(hasResult2).toBe(true);
+
+    const userMessage3 = mappedMessages[4];
+    const hasResult3 = userMessage3.content?.some(
+      (b: any) => b.toolResult?.toolUseId === 'tooluse_synthetic',
+    );
+    expect(hasResult3).toBe(true);
+  });
 });

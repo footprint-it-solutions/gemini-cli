@@ -380,7 +380,6 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
   private mapContentsToMessages(contents: Content[]): Message[] {
     const messages: Message[] = [];
     let lastModelContent: Content | undefined = undefined;
-    const answeredToolUseIds = new Set<string>();
 
     for (const content of contents) {
       const role = content.role === 'model' ? 'assistant' : 'user';
@@ -474,7 +473,6 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
               ],
             },
           } as any);
-          answeredToolUseIds.add(baseId);
         } else if (lastModelContent) {
           // No function responses, but the preceding turn was a model turn
           // which ALWAYS maps to a toolUse block for 'nova_response_schema'.
@@ -502,7 +500,16 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
             );
           }
 
-          if (!answeredToolUseIds.has(precedingBaseId)) {
+          const hasAnsweredPreceding = contentBlocks.some((block) => {
+            const blockObj = block as any;
+            return (
+              blockObj &&
+              blockObj.toolResult &&
+              blockObj.toolResult.toolUseId === precedingBaseId
+            );
+          });
+
+          if (!hasAnsweredPreceding) {
             contentBlocks.push({
               toolResult: {
                 toolUseId: precedingBaseId,
@@ -514,7 +521,6 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
                 ],
               },
             } as any);
-            answeredToolUseIds.add(precedingBaseId);
           }
         }
       }
@@ -595,31 +601,61 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
           }
 
           if (Array.isArray(toolCalls)) {
-            emittedToolCallCount += toolCalls.length;
-            toolCalls.forEach((tc) => {
-              let parsedArgs: any = {};
-              try {
-                parsedArgs = JSON.parse(tc.arguments_json || '{}');
-              } catch {
-                parsedArgs = { __malformed: tc.arguments_json };
-              }
+            // Deduplicate redundant parallel tool calls with identical name and arguments
+            const uniqueToolCalls: any[] = [];
+            const seenKeys = new Set<string>();
 
-              // Auto-prepend plans directory for write_file and replace tools in Plan Mode to comply with policy constraints
-              if (
-                (tc.name === 'write_file' || tc.name === 'replace') &&
-                this.currentPlansDir &&
-                parsedArgs.file_path &&
-                !parsedArgs.file_path.includes('.gemini')
-              ) {
-                let cleanFile = parsedArgs.file_path.replace(/^[.\\/]+/, '');
-                if (cleanFile.startsWith('plans/')) {
-                  cleanFile = cleanFile.slice(6);
-                } else if (cleanFile.startsWith('plans\\')) {
-                  cleanFile = cleanFile.slice(6);
+            for (const tc of toolCalls) {
+              if (tc && typeof tc === 'object') {
+                let parsedArgs: any = {};
+                try {
+                  parsedArgs = JSON.parse(tc.arguments_json || '{}');
+                } catch {
+                  parsedArgs = { __malformed: tc.arguments_json };
                 }
-                parsedArgs.file_path = `${this.currentPlansDir}/${cleanFile}`;
-              }
 
+                // Auto-prepend plans directory for write_file and replace tools in Plan Mode to comply with policy constraints
+                if (
+                  (tc.name === 'write_file' || tc.name === 'replace') &&
+                  this.currentPlansDir &&
+                  parsedArgs.file_path &&
+                  !parsedArgs.file_path.includes('.gemini')
+                ) {
+                  let cleanFile = parsedArgs.file_path.replace(/^[.\\/]+/, '');
+                  if (cleanFile.startsWith('plans/')) {
+                    cleanFile = cleanFile.slice(6);
+                  } else if (cleanFile.startsWith('plans\\')) {
+                    cleanFile = cleanFile.slice(6);
+                  }
+                  parsedArgs.file_path = `${this.currentPlansDir}/${cleanFile}`;
+                }
+
+                // Create a stable key for deduplication based on sorted arguments
+                const stableArgs =
+                  typeof parsedArgs === 'object' && parsedArgs !== null
+                    ? JSON.stringify(
+                        Object.keys(parsedArgs)
+                          .sort()
+                          .reduce((acc, key) => {
+                            acc[key] = parsedArgs[key];
+                            return acc;
+                          }, {} as any),
+                      )
+                    : tc.arguments_json || '';
+                const key = `${tc.name || ''}:${stableArgs}`;
+
+                if (!seenKeys.has(key)) {
+                  seenKeys.add(key);
+                  uniqueToolCalls.push({
+                    tc,
+                    parsedArgs,
+                  });
+                }
+              }
+            }
+
+            emittedToolCallCount += uniqueToolCalls.length;
+            uniqueToolCalls.forEach(({ tc, parsedArgs }) => {
               const baseId =
                 currentToolUseId ||
                 `call_${Math.random().toString(36).substring(2, 9)}`;
@@ -803,30 +839,60 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
         if (finalThoughts) allThoughtParts.push(finalThoughts);
         if (finalText) allTextParts.push(finalText);
 
-        finalToolCalls.forEach((tc) => {
-          let parsedArgs: any = {};
-          try {
-            parsedArgs = JSON.parse(tc.arguments_json || '{}');
-          } catch {
-            parsedArgs = { __malformed: tc.arguments_json };
-          }
+        const uniqueToolCalls: any[] = [];
+        if (Array.isArray(finalToolCalls)) {
+          const seenKeys = new Set<string>();
+          for (const tc of finalToolCalls) {
+            if (tc && typeof tc === 'object') {
+              let parsedArgs: any = {};
+              try {
+                parsedArgs = JSON.parse(tc.arguments_json || '{}');
+              } catch {
+                parsedArgs = { __malformed: tc.arguments_json };
+              }
 
-          // Auto-prepend plans directory for write_file and replace tools in Plan Mode to comply with policy constraints
-          if (
-            (tc.name === 'write_file' || tc.name === 'replace') &&
-            this.currentPlansDir &&
-            parsedArgs.file_path &&
-            !parsedArgs.file_path.includes('.gemini')
-          ) {
-            let cleanFile = parsedArgs.file_path.replace(/^[.\\/]+/, '');
-            if (cleanFile.startsWith('plans/')) {
-              cleanFile = cleanFile.slice(6);
-            } else if (cleanFile.startsWith('plans\\')) {
-              cleanFile = cleanFile.slice(6);
+              // Auto-prepend plans directory for write_file and replace tools in Plan Mode to comply with policy constraints
+              if (
+                (tc.name === 'write_file' || tc.name === 'replace') &&
+                this.currentPlansDir &&
+                parsedArgs.file_path &&
+                !parsedArgs.file_path.includes('.gemini')
+              ) {
+                let cleanFile = parsedArgs.file_path.replace(/^[.\\/]+/, '');
+                if (cleanFile.startsWith('plans/')) {
+                  cleanFile = cleanFile.slice(6);
+                } else if (cleanFile.startsWith('plans\\')) {
+                  cleanFile = cleanFile.slice(6);
+                }
+                parsedArgs.file_path = `${this.currentPlansDir}/${cleanFile}`;
+              }
+
+              // Create a stable key for deduplication based on sorted arguments
+              const stableArgs =
+                typeof parsedArgs === 'object' && parsedArgs !== null
+                  ? JSON.stringify(
+                      Object.keys(parsedArgs)
+                        .sort()
+                        .reduce((acc, key) => {
+                          acc[key] = parsedArgs[key];
+                          return acc;
+                        }, {} as any),
+                    )
+                  : tc.arguments_json || '';
+              const key = `${tc.name || ''}:${stableArgs}`;
+
+              if (!seenKeys.has(key)) {
+                seenKeys.add(key);
+                uniqueToolCalls.push({
+                  tc,
+                  parsedArgs,
+                });
+              }
             }
-            parsedArgs.file_path = `${this.currentPlansDir}/${cleanFile}`;
           }
+        }
 
+        uniqueToolCalls.forEach(({ tc, parsedArgs }) => {
           const baseId =
             currentToolUseId ||
             `call_${Math.random().toString(36).substring(2, 9)}`;
