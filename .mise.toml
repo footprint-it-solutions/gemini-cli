@@ -6,6 +6,7 @@ AWS_SSO_PROFILE = "Footprint"
 # GEMINI_API_KEY = "foo"
 GEMINI_CLI_HOME = ".gemini-isolated"
 GEMINI_DEBUG_LOG_FILE = "bedrock-debug.log"
+OLLAMA_BASE_URL = "http://localhost:11434"
 
 [settings]
 env_shell_expand = true
@@ -28,8 +29,8 @@ run = "npm run build:all && npm run bundle"
 
 [tasks.install]
 description = "Builds, bundles, packs and installs the application"
-run = "npm run build:all && npm run bundle && npm pack && npm install -g ./footprint-it-solutions-gemini-cli-0.45.3.tgz"
+run = '''npm run build:all && npm run bundle && npm pack && TARBALL=$(node -p 'const p = require("./package.json"); `${p.name.replace("@", "").replace("/", "-")}-${p.version}.tgz`') && npm install -g "$TARBALL" && rm "$TARBALL"'''
 
 [hooks]
 # This runs when you enter the directory or open it in VS Code
-enter = { task = "aws-login" }
+# enter = { task = "aws-login" }
