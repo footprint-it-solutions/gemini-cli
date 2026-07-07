@@ -379,9 +379,14 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
 
   private mapContentsToMessages(contents: Content[]): Message[] {
     const messages: Message[] = [];
+    let lastModelContent: Content | undefined = undefined;
+    const answeredToolUseIds = new Set<string>();
 
     for (const content of contents) {
       const role = content.role === 'model' ? 'assistant' : 'user';
+      if (content.role === 'model') {
+        lastModelContent = content;
+      }
       const contentBlocks: ContentBlock[] = [];
 
       const parts = content.parts || [];
@@ -410,19 +415,13 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
         for (const part of parts) {
           const originalId = (part as any).metadata?.originalToolUseId;
           if (originalId) {
-            baseId = originalId;
+            baseId = cleanToolCallId(originalId);
             break;
           }
         }
 
         if (baseId === 'tooluse_synthetic' && functionCalls.length > 0) {
-          const rawId = functionCalls[0].id || '';
-          const lastUnderscore = rawId.lastIndexOf('_');
-          baseId =
-            lastUnderscore !== -1 &&
-            !isNaN(Number(rawId.substring(lastUnderscore + 1)))
-              ? rawId.substring(0, lastUnderscore)
-              : rawId || 'tooluse_synthetic';
+          baseId = cleanToolCallId(functionCalls[0].id || '');
         }
 
         const thoughts =
@@ -450,13 +449,9 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
         }
 
         if (functionResponses.length > 0) {
-          const rawId = functionResponses[0].id || 'tooluse_synthetic';
-          const lastUnderscore = rawId.lastIndexOf('_');
-          const baseId =
-            lastUnderscore !== -1 &&
-            !isNaN(Number(rawId.substring(lastUnderscore + 1)))
-              ? rawId.substring(0, lastUnderscore)
-              : rawId;
+          const baseId = cleanToolCallId(
+            functionResponses[0].id || 'tooluse_synthetic',
+          );
           const formattedResult =
             functionResponses.length === 1
               ? {
@@ -479,6 +474,48 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
               ],
             },
           } as any);
+          answeredToolUseIds.add(baseId);
+        } else if (lastModelContent) {
+          // No function responses, but the preceding turn was a model turn
+          // which ALWAYS maps to a toolUse block for 'nova_response_schema'.
+          // We MUST provide a toolResult block to satisfy Bedrock Converse API!
+          let precedingBaseId = 'tooluse_synthetic';
+          const precedingParts = lastModelContent.parts || [];
+          const precedingFunctionCalls: any[] = [];
+
+          for (const p of precedingParts) {
+            if ('functionCall' in p && p.functionCall) {
+              precedingFunctionCalls.push(p.functionCall);
+            }
+            const originalId = (p as any).metadata?.originalToolUseId;
+            if (originalId) {
+              precedingBaseId = cleanToolCallId(originalId);
+            }
+          }
+
+          if (
+            precedingBaseId === 'tooluse_synthetic' &&
+            precedingFunctionCalls.length > 0
+          ) {
+            precedingBaseId = cleanToolCallId(
+              precedingFunctionCalls[0].id || '',
+            );
+          }
+
+          if (!answeredToolUseIds.has(precedingBaseId)) {
+            contentBlocks.push({
+              toolResult: {
+                toolUseId: precedingBaseId,
+                status: 'success',
+                content: [
+                  {
+                    text: JSON.stringify({ success: true }),
+                  },
+                ],
+              },
+            } as any);
+            answeredToolUseIds.add(precedingBaseId);
+          }
         }
       }
 
@@ -492,6 +529,39 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
             content: contentBlocks,
           });
         }
+      }
+    }
+
+    // Deduplicate and merge toolResult blocks with the same toolUseId inside each user Message
+    for (const msg of messages) {
+      if (msg.role === 'user' && msg.content) {
+        const mergedContent: ContentBlock[] = [];
+        const seenToolResults = new Map<string, any>(); // toolUseId -> toolResult block object
+
+        for (const block of msg.content) {
+          const blockObj = block as any;
+          if (blockObj.toolResult) {
+            const toolUseId = blockObj.toolResult.toolUseId;
+            const existing = seenToolResults.get(toolUseId);
+            if (existing) {
+              const existingText = existing.toolResult.content?.[0]?.text || '';
+              const newText = blockObj.toolResult.content?.[0]?.text || '';
+              const mergedText = mergeToolResultTexts(existingText, newText);
+
+              if (existing.toolResult.content?.[0]) {
+                existing.toolResult.content[0].text = mergedText;
+              } else {
+                existing.toolResult.content = [{ text: mergedText }];
+              }
+            } else {
+              seenToolResults.set(toolUseId, blockObj);
+              mergedContent.push(block);
+            }
+          } else {
+            mergedContent.push(block);
+          }
+        }
+        msg.content = mergedContent;
       }
     }
 
@@ -926,5 +996,35 @@ export function unescapePartialString(s: string): string {
     return JSON.parse('\"' + clean + '\"');
   } catch {
     return s.replace(/\\n/g, '\n').replace(/\\"/g, '\"').replace(/\\\\/g, '\\');
+  }
+}
+
+export function cleanToolCallId(id: string): string {
+  if (!id) return id;
+  const lastDoubleUnderscore = id.lastIndexOf('__');
+  let cleanId =
+    lastDoubleUnderscore !== -1 ? id.substring(lastDoubleUnderscore + 2) : id;
+
+  const lastUnderscore = cleanId.lastIndexOf('_');
+  if (
+    lastUnderscore !== -1 &&
+    !isNaN(Number(cleanId.substring(lastUnderscore + 1)))
+  ) {
+    cleanId = cleanId.substring(0, lastUnderscore);
+  }
+  return cleanId;
+}
+
+export function mergeToolResultTexts(text1: string, text2: string): string {
+  try {
+    const p1 = JSON.parse(text1);
+    const p2 = JSON.parse(text2);
+    const arr1 = Array.isArray(p1) ? p1 : [p1];
+    const arr2 = Array.isArray(p2) ? p2 : [p2];
+    return JSON.stringify([...arr1, ...arr2]);
+  } catch {
+    if (!text1) return text2;
+    if (!text2) return text1;
+    return JSON.stringify({ success: true, details: `${text1}; ${text2}` });
   }
 }

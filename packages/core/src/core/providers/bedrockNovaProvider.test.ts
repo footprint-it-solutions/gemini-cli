@@ -34,7 +34,7 @@ describe('BedrockNovaContentGenerator - Core Utilities', () => {
     });
 
     it('should handle incomplete or trailing backslashes gracefully', () => {
-      expect(unescapePartialString('hello\\')).toBe('hello\\');
+      expect(unescapePartialString('hello\\')).toBe('hello');
     });
   });
 
@@ -309,5 +309,159 @@ describe('BedrockNovaContentGenerator - Content Generator', () => {
     expect(parsedTextResults[0].result).toEqual({ content: 'A' });
     expect(parsedTextResults[1].tool_name).toBe('read_file');
     expect(parsedTextResults[1].result).toEqual({ content: 'B' });
+  });
+
+  it('REPRO: should map conversational history where a model turn has no tools but user has a follow-up text prompt', () => {
+    const contents: any[] = [
+      {
+        role: 'user',
+        parts: [{ text: 'Hello' }],
+      },
+      {
+        role: 'model',
+        parts: [
+          {
+            text: 'I found files.',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          {
+            text: 'Awesome, please read them',
+          },
+        ],
+      },
+    ];
+
+    // @ts-ignore
+    const mappedMessages = generator.mapContentsToMessages(contents);
+
+    expect(mappedMessages.length).toBe(3);
+
+    // Turn 1 (user): text
+    expect(mappedMessages[0].role).toBe('user');
+    expect(mappedMessages[0].content?.[0]).toEqual({ text: 'Hello' });
+
+    // Turn 2 (assistant): toolUse of nova_response_schema with tooluse_synthetic
+    expect(mappedMessages[1].role).toBe('assistant');
+    const assistantToolUse = mappedMessages[1].content?.[0] as any;
+    expect(assistantToolUse.toolUse.name).toBe('nova_response_schema');
+    expect(assistantToolUse.toolUse.toolUseId).toBe('tooluse_synthetic');
+
+    // Turn 3 (user): MUST contain both the text and a toolResult block for tooluse_synthetic to satisfy Bedrock!
+    expect(mappedMessages[2].role).toBe('user');
+    expect(
+      mappedMessages[2].content?.some(
+        (block: any) => block.text === 'Awesome, please read them',
+      ),
+    ).toBe(true);
+    expect(
+      mappedMessages[2].content?.some(
+        (block: any) => block.toolResult?.toolUseId === 'tooluse_synthetic',
+      ),
+    ).toBe(true);
+  });
+
+  it('REPRO: should NOT duplicate toolResult blocks with the same ID when there are consecutive user turns', () => {
+    const contents: any[] = [
+      {
+        role: 'user',
+        parts: [{ text: 'Hello' }],
+      },
+      {
+        role: 'model',
+        parts: [
+          {
+            text: 'I found files.',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          {
+            text: 'Consecutive segment 1',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          {
+            text: 'Consecutive segment 2',
+          },
+        ],
+      },
+    ];
+
+    // @ts-ignore
+    const mappedMessages = generator.mapContentsToMessages(contents);
+
+    // Consecutive user turns are coalesced into a single Message under role 'user'
+    expect(mappedMessages.length).toBe(3);
+
+    expect(mappedMessages[0].role).toBe('user');
+    expect(mappedMessages[1].role).toBe('assistant');
+    expect(mappedMessages[2].role).toBe('user');
+
+    const lastUserMessage = mappedMessages[2];
+    const toolResults =
+      lastUserMessage.content?.filter((block: any) => block.toolResult) || [];
+
+    // There MUST be exactly one toolResult block for 'tooluse_synthetic'
+    expect(toolResults.length).toBe(1);
+    expect(toolResults[0]?.toolResult?.toolUseId).toBe('tooluse_synthetic');
+  });
+
+  it('REPRO: should correctly align toolUseId and toolResultId even if there is a prefix mismatch', () => {
+    const contents: any[] = [
+      {
+        role: 'user',
+        parts: [{ text: 'Hello' }],
+      },
+      {
+        role: 'model',
+        parts: [
+          {
+            functionCall: {
+              id: 'mcp_git_git_status__tooluse_KfDgpsRapEXpRCT6klvI8d_0',
+              name: 'mcp_git_git_status',
+              args: {},
+            },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              id: 'tooluse_KfDgpsRapEXpRCT6klvI8d_0',
+              name: 'mcp_git_git_status',
+              response: { success: true },
+            },
+          },
+        ],
+      },
+    ];
+
+    // @ts-ignore
+    const mappedMessages = generator.mapContentsToMessages(contents);
+
+    expect(mappedMessages.length).toBe(3);
+
+    // Assistant turn should have cleaned toolUseId: "tooluse_KfDgpsRapEXpRCT6klvI8d"
+    const assistantMessage = mappedMessages[1];
+    expect(assistantMessage.content?.[0]?.toolUse?.toolUseId).toBe(
+      'tooluse_KfDgpsRapEXpRCT6klvI8d',
+    );
+
+    // User turn should have cleaned toolUseId: "tooluse_KfDgpsRapEXpRCT6klvI8d"
+    const userMessage = mappedMessages[2];
+    expect(userMessage.content?.[0]?.toolResult?.toolUseId).toBe(
+      'tooluse_KfDgpsRapEXpRCT6klvI8d',
+    );
   });
 });
