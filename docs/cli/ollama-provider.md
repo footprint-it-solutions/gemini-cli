@@ -114,6 +114,35 @@ export DEBUG=ollama
 gemini "test prompt"
 ```
 
+## Planned Enhancements
+
+The Ollama provider is planned to receive several significant improvements based
+on patterns from the Bedrock Nova provider implementation:
+
+### Key Improvements
+
+1. **Enhanced Schema Enforcement** - Implement forced schema approach with
+   mandatory schema tools
+2. **Improved Streaming Parser** - Better state management and error recovery
+   mechanisms
+3. **Advanced Tool Call Handling** - Robust parsing of both structured and XML
+   tool calls
+4. **Enhanced Error Handling** - Comprehensive error classification and
+   user-friendly messages
+5. **Configuration Extensions** - More advanced sampling parameters and
+   debugging options
+
+### Additional Enhancement: Custom Modelfile Support
+
+- Specialized Modelfile directives for tool calling optimization
+- Pre-configured model templates optimized for Gemini CLI
+- Scripts to push enhanced models to local Ollama instance
+
+These improvements will significantly enhance reliability, streaming
+performance, and tool call handling while maintaining Ollama-specific
+compatibility requirements. For the latest information on implementation
+progress, check the project's issue tracker and documentation updates.
+
 ## Next Steps
 
 1. **Experiment with different models** - Try various Ollama models to find what
