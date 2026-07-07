@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BedrockContentGenerator } from './src/core/providers/bedrockProvider.js';
+import { BedrockNovaContentGenerator } from './src/core/providers/bedrockNovaProvider.js';
 
 async function run() {
   process.env.AWS_CONFIG_FILE =
@@ -15,7 +15,7 @@ async function run() {
   console.log('=== Running Direct Bedrock Nova Micro Test ===');
 
   // Instantiate generator in Stockholm region (eu-north-1) or eu-west-1
-  const generator = new BedrockContentGenerator(
+  const generator = new BedrockNovaContentGenerator(
     'eu-west-1',
     'Aerith-Development',
   );

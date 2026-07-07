@@ -6,7 +6,7 @@
 
 import type { Tool } from '@google/genai';
 import { type SystemContentBlock } from '@aws-sdk/client-bedrock-runtime';
-import { BedrockContentGenerator } from '../core/providers/bedrockProvider.js';
+import { BedrockNovaContentGenerator } from '../core/providers/bedrockNovaProvider.js';
 import { debugLogger } from '../utils/debugLogger.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { coreEvents, CoreEvent } from '../utils/events.js';
@@ -18,9 +18,10 @@ export interface ToolCallSummary {
   endLine?: number;
 }
 
-export interface BedrockContinuationState {
+export interface BedrockNovaContinuationState {
   fallbackContinuationCount: number;
   lastFallbackToolFingerprint?: string;
+  lastResponseTextLength?: number;
 }
 
 export type BedrockTurnTextKind =
@@ -34,7 +35,7 @@ export type BedrockTurnTextKind =
 export type BedrockTurnDecision =
   'continue' | 'stop' | 'ask_user' | 'uncertain';
 
-export interface BedrockProviderTurnStateMetadata {
+export interface BedrockNovaProviderTurnStateMetadata {
   isStreaming: boolean;
   rawStopReason: string | null;
   responseText: string;
@@ -50,7 +51,7 @@ export interface BedrockProviderTurnStateMetadata {
   };
 }
 
-export interface BedrockTurnState {
+export interface BedrockNovaTurnState {
   promptId: string;
   turnId: string;
   finishReason: string;
@@ -64,7 +65,7 @@ export interface BedrockTurnState {
   appearsIncomplete: boolean;
   endsWithColon: boolean;
   endsWithQuestion: boolean;
-  providerMetadata?: BedrockProviderTurnStateMetadata;
+  providerMetadata?: BedrockNovaProviderTurnStateMetadata;
 }
 
 export interface BedrockTurnClassifierResult {
@@ -104,21 +105,23 @@ const BEDROCK_MICRO_CLASSIFIER_SCHEMA: Record<string, unknown> = {
   required: ['decision', 'confidence', 'signals', 'reason', 'summary'],
 };
 
-export async function checkNextSpeakerBedrock(
-  turnState: BedrockTurnState,
+export async function checkNextSpeakerBedrockNova(
+  turnState: BedrockNovaTurnState,
   signal: AbortSignal,
   promptId: string,
   awsProfile?: string,
+  logFilename?: string,
 ): Promise<BedrockTurnClassifierResult | null> {
   if (process.env['GEMINI_CLI_BEDROCK_USE_MICRO_CLASSIFIER'] === 'false') {
     return null;
   }
 
-  const generator = new BedrockContentGenerator(
+  const generator = new BedrockNovaContentGenerator(
     process.env['AWS_BEDROCK_REGION'] ||
       process.env['AWS_REGION'] ||
       process.env['AWS_DEFAULT_REGION'],
     awsProfile || process.env['AWS_PROFILE'],
+    logFilename,
   );
   const classifierModel =
     process.env['GEMINI_CLI_BEDROCK_MICRO_CLASSIFIER_MODEL'] ||
@@ -201,14 +204,15 @@ export async function checkNextSpeakerBedrock(
         inputTokens,
         outputTokens,
         totalTokens,
-        context: 'checkNextSpeakerBedrock',
+        context: 'checkNextSpeakerBedrockNova',
       });
     }
 
     const toolCall =
       response.functionCalls && Array.isArray(response.functionCalls)
         ? response.functionCalls.find(
-            (call) => call.name === BEDROCK_MICRO_CLASSIFIER_TOOL_NAME,
+            (call: { name?: string }) =>
+              call.name === BEDROCK_MICRO_CLASSIFIER_TOOL_NAME,
           )
         : undefined;
     if (
@@ -323,23 +327,33 @@ export async function checkNextSpeakerBedrock(
 }
 
 export function shouldUseBedrockContinuationBudget(
-  continuationState: BedrockContinuationState,
+  continuationState: BedrockNovaContinuationState,
 ): boolean {
   return continuationState.fallbackContinuationCount < 100;
 }
 
 export function shouldContinueBedrockFallbackChain(
-  continuationState: BedrockContinuationState,
+  continuationState: BedrockNovaContinuationState,
   currentToolFingerprint: string,
+  isForcedContinuation = false,
+  currentResponseTextLength = 0,
 ): boolean {
+  if (isForcedContinuation) {
+    return true;
+  }
   if (continuationState.fallbackContinuationCount === 0) {
     return true;
   }
 
-  return (
+  const hasToolProgress =
     Boolean(continuationState.lastFallbackToolFingerprint) &&
-    continuationState.lastFallbackToolFingerprint !== currentToolFingerprint
-  );
+    continuationState.lastFallbackToolFingerprint !== currentToolFingerprint;
+
+  const hasTextProgress =
+    continuationState.lastResponseTextLength !== undefined &&
+    currentResponseTextLength > continuationState.lastResponseTextLength;
+
+  return hasToolProgress || hasTextProgress;
 }
 
 /**

@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TestRig } from './test-helper.js';
@@ -14,7 +14,10 @@ describe('Bedrock Plan Mode', () => {
 
   beforeEach(() => {
     rig = new TestRig();
-    vi.stubEnv('AWS_CONFIG_FILE', '/home/andrew/repos/footprint-it-solutions/project-aerith/gemini-cli-custom/.aws/config');
+    vi.stubEnv(
+      'AWS_CONFIG_FILE',
+      '/home/andrew/repos/footprint-it-solutions/project-aerith/gemini-cli-custom/.aws/config',
+    );
     vi.stubEnv('AWS_PROFILE', 'Aerith-Development');
     vi.stubEnv('AWS_SDK_LOAD_CONFIG', '1');
   });
@@ -34,7 +37,13 @@ describe('Bedrock Plan Mode', () => {
           name: 'bedrock/eu.amazon.nova-2-lite-v1:0',
         },
         tools: {
-          core: ['write_file', 'read_file', 'replace', 'update_topic', 'list_directory'],
+          core: [
+            'write_file',
+            'read_file',
+            'replace',
+            'update_topic',
+            'list_directory',
+          ],
         },
         general: {
           plan: { enabled: true, directory: plansDir },
@@ -56,25 +65,35 @@ describe('Bedrock Plan Mode', () => {
       });
     } catch (err) {
       const toolLogs = rig.readToolLogs();
-      console.error('ALL TOOL LOGS ON FAILURE:', JSON.stringify(toolLogs, null, 2));
+      console.error(
+        'ALL TOOL LOGS ON FAILURE:',
+        JSON.stringify(toolLogs, null, 2),
+      );
       throw err;
     }
 
     // Check that write_file was successfully called to create the plan
     const toolLogs = rig.readToolLogs();
-    
+
     console.log('ALL TOOL LOG DETAILS:', JSON.stringify(toolLogs, null, 2));
 
     const writePlanLog = toolLogs.find(
-      (l) => l.toolRequest.name === 'write_file' && l.toolRequest.args.includes('plans') && l.toolRequest.success === true
+      (l) =>
+        l.toolRequest.name === 'write_file' &&
+        l.toolRequest.args.includes('plans') &&
+        l.toolRequest.success === true,
     );
 
-    expect(writePlanLog, 'Expected a successful write_file tool call in the plans directory').toBeDefined();
+    expect(
+      writePlanLog,
+      'Expected a successful write_file tool call in the plans directory',
+    ).toBeDefined();
   }, 60000);
 
   it('should exhaustively plan and execute a multi-step Go code refactor', async () => {
     const plansDir = '.gemini/tmp/bedrock-plan-tests/plans';
-    const testName = 'should exhaustively plan and execute a multi-step Go code refactor';
+    const testName =
+      'should exhaustively plan and execute a multi-step Go code refactor';
 
     await rig.setup(testName, {
       settings: {
@@ -82,7 +101,14 @@ describe('Bedrock Plan Mode', () => {
           name: 'bedrock/eu.amazon.nova-2-lite-v1:0',
         },
         tools: {
-          core: ['write_file', 'read_file', 'replace', 'update_topic', 'list_directory', 'exit_plan_mode'],
+          core: [
+            'write_file',
+            'read_file',
+            'replace',
+            'update_topic',
+            'list_directory',
+            'exit_plan_mode',
+          ],
         },
         general: {
           plan: { enabled: true, directory: plansDir },
@@ -116,7 +142,10 @@ func Calculate(a, b int) int {
       });
     } catch (err) {
       const toolLogs = rig.readToolLogs();
-      console.error('ALL TOOL LOGS ON FAILURE:', JSON.stringify(toolLogs, null, 2));
+      console.error(
+        'ALL TOOL LOGS ON FAILURE:',
+        JSON.stringify(toolLogs, null, 2),
+      );
       throw err;
     }
 
@@ -125,26 +154,44 @@ func Calculate(a, b int) int {
 
     // Assert that the plan was drafted
     const writePlanLog = toolLogs.find(
-      (l) => l.toolRequest.name === 'write_file' && l.toolRequest.args.includes('plans') && l.toolRequest.success === true
+      (l) =>
+        l.toolRequest.name === 'write_file' &&
+        l.toolRequest.args.includes('plans') &&
+        l.toolRequest.success === true,
     );
-    expect(writePlanLog, 'Expected a successful write_file tool call for the plan').toBeDefined();
+    expect(
+      writePlanLog,
+      'Expected a successful write_file tool call for the plan',
+    ).toBeDefined();
 
     // Assert that exit_plan_mode was executed
     const exitPlanLog = toolLogs.find(
-      (l) => l.toolRequest.name === 'exit_plan_mode' && l.toolRequest.success === true
+      (l) =>
+        l.toolRequest.name === 'exit_plan_mode' &&
+        l.toolRequest.success === true,
     );
-    expect(exitPlanLog, 'Expected a successful exit_plan_mode tool call').toBeDefined();
+    expect(
+      exitPlanLog,
+      'Expected a successful exit_plan_mode tool call',
+    ).toBeDefined();
 
     // Assert that replace was executed on the Go file
     const replaceLog = toolLogs.find(
-      (l) => l.toolRequest.name === 'replace' && l.toolRequest.args.includes('math.go') && l.toolRequest.success === true
+      (l) =>
+        l.toolRequest.name === 'replace' &&
+        l.toolRequest.args.includes('math.go') &&
+        l.toolRequest.success === true,
     );
-    expect(replaceLog, 'Expected a successful replace tool call modifying math.go').toBeDefined();
+    expect(
+      replaceLog,
+      'Expected a successful replace tool call modifying math.go',
+    ).toBeDefined();
   }, 120000);
 
   it('should interactively plan and execute a Go refactor under Bedrock', async () => {
     const plansDir = '.gemini/tmp/bedrock-plan-tests/plans';
-    const testName = 'should interactively plan and execute a Go refactor under Bedrock';
+    const testName =
+      'should interactively plan and execute a Go refactor under Bedrock';
 
     await rig.setup(testName, {
       settings: {
@@ -157,7 +204,14 @@ func Calculate(a, b int) int {
           },
         },
         tools: {
-          core: ['write_file', 'read_file', 'replace', 'update_topic', 'list_directory', 'exit_plan_mode'],
+          core: [
+            'write_file',
+            'read_file',
+            'replace',
+            'update_topic',
+            'list_directory',
+            'exit_plan_mode',
+          ],
         },
         general: {
           plan: { enabled: true, directory: plansDir },
@@ -208,7 +262,7 @@ func Calculate(a, b int) int {
 
       // Directly read and assert on the modified Go file content on disk!
       const finalGoPath = join(rig.testDir!, 'math.go');
-      const finalGoCode = require('node:fs').readFileSync(finalGoPath, 'utf8');
+      const finalGoCode = readFileSync(finalGoPath, 'utf8');
       console.log('FINAL GO CODE ON DISK:\n', finalGoCode);
       expect(finalGoCode).toContain('func Subtract(');
       expect(finalGoCode).toContain('Subtract(');

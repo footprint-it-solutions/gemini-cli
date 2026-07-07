@@ -75,7 +75,7 @@ describe('hardenHistory', () => {
     const hardened = hardenHistory(history);
     expect(hardened.length).toBe(3);
     expect(hardened[2].content.role).toBe('user');
-    expect(hardened[2].content.parts![0]).toEqual({ text: 'Please continue.' });
+    expect(hardened[2].content.parts![0]).toEqual({ text: 'Continue' });
     expect(hardened[2].id).toBe(deriveStableId(['2', 'sentinel_end']));
   });
 

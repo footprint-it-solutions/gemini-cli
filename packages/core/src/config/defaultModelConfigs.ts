@@ -57,7 +57,7 @@ export const AMAZON_NOVA_MICRO = 'eu.amazon.nova-micro-v1:0';
 /**
  * Model aliases for Ollama models.
  */
-export const OLLAMA_LLAMA3 = 'llama3';
+export const OLLAMA_LLAMA3 = 'llama3.1';
 export const OLLAMA_MISTRAL = 'mistral';
 export const OLLAMA_PHI3 = 'phi3';
 export const OLLAMA_LLAMA3_1 = 'llama3.1';
@@ -394,17 +394,41 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
     'o1-mini': { modelConfig: { model: 'openai/o1-mini' } },
 
     // Amazon Bedrock
-    'nova-pro': { modelConfig: { model: 'bedrock/' + AMAZON_NOVA_PRO } },
-    'nova-lite': { modelConfig: { model: 'bedrock/' + AMAZON_NOVA_LITE } },
-    'nova-micro': { modelConfig: { model: 'bedrock/' + AMAZON_NOVA_MICRO } },
+    'nova-pro': {
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_PRO,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
+    },
+    'nova-lite': {
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_LITE,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
+    },
+    'nova-micro': {
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_MICRO,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
+    },
     'bedrock/nova-pro': {
-      modelConfig: { model: 'bedrock/' + AMAZON_NOVA_PRO },
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_PRO,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
     },
     'bedrock/nova-lite': {
-      modelConfig: { model: 'bedrock/' + AMAZON_NOVA_LITE },
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_LITE,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
     },
     'bedrock/nova-micro': {
-      modelConfig: { model: 'bedrock/' + AMAZON_NOVA_MICRO },
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_MICRO,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
     },
 
     // Ollama

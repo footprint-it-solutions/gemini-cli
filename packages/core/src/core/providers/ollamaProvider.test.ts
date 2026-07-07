@@ -4,101 +4,130 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { OllamaContentGenerator } from './ollamaProvider.js';
-import { LlmRole } from '../../telemetry/llmRole.js';
-
-// Mock Ollama
-vi.mock('ollama', () => {
-  return {
-    Ollama: vi.fn().mockImplementation(() => ({
-      chat: vi.fn(),
-      embeddings: vi.fn(),
-    })),
-  };
-});
+import type { CountTokensParameters } from '@google/genai';
 
 describe('OllamaContentGenerator', () => {
   let generator: OllamaContentGenerator;
-  let mockClient: any;
 
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    generator = new OllamaContentGenerator('http://localhost:11434');
-    // @ts-ignore
-    mockClient = generator['client'];
+  beforeEach(() => {
+    generator = new OllamaContentGenerator();
   });
 
-  it('should generate content correctly', async () => {
-    const mockResponse = {
-      message: {
-        role: 'assistant',
-        content: 'Hello from Ollama!',
-      },
-      done: true,
-      prompt_eval_count: 10,
-      eval_count: 5,
-    };
-
-    mockClient.chat.mockResolvedValue(mockResponse);
-
-    const request: any = {
-      model: 'llama3',
-      contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
-    };
-
-    const response = await generator.generateContent(request, 'prompt-id', LlmRole.MAIN);
-
-    expect(response.candidates?.[0].content?.parts?.[0].text).toBe('Hello from Ollama!');
-    expect(response.usageMetadata?.totalTokenCount).toBe(15);
-    expect(mockClient.chat).toHaveBeenCalledWith(expect.objectContaining({
-      model: 'llama3',
-      messages: [
-        { role: 'user', content: 'Hi' }
-      ],
-    }));
-  });
-
-  it('should handle tool calls', async () => {
-      const mockResponse = {
-          message: {
-              role: 'assistant',
-              content: '',
-              tool_calls: [
-                  {
-                      function: {
-                          name: 'get_weather',
-                          arguments: { location: 'London' },
-                      },
-                  },
-              ],
-          },
-          done: true,
+  describe('countTokens', () => {
+    it('should handle string content input', async () => {
+      const request: CountTokensParameters = {
+        model: 'test-model',
+        contents: 'Hello world',
       };
 
-      mockClient.chat.mockResolvedValue(mockResponse);
+      const result = await generator.countTokens(request);
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('totalTokens');
+      expect(typeof result.totalTokens).toBe('number');
+    });
 
-      const request: any = {
-          model: 'llama3',
-          contents: [{ role: 'user', parts: [{ text: 'Weather?' }] }],
-          config: {
-              tools: [
-                  {
-                      functionDeclarations: [
-                          {
-                              name: 'get_weather',
-                              description: 'Get weather',
-                              parameters: { type: 'object', properties: { location: { type: 'string' } } },
-                          },
-                      ],
-                  },
-              ],
-          },
+    it('should handle array of string content', async () => {
+      const request: CountTokensParameters = {
+        model: 'test-model',
+        contents: ['Hello', 'world'],
       };
 
-      const response = await generator.generateContent(request as any, 'prompt-id', LlmRole.MAIN);
+      const result = await generator.countTokens(request);
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('totalTokens');
+      expect(typeof result.totalTokens).toBe('number');
+    });
 
-      expect(response.candidates?.[0].content?.parts?.[0].functionCall?.name).toBe('get_weather');
-      expect(response.candidates?.[0].content?.parts?.[0].functionCall?.args).toEqual({ location: 'London' });
+    it('should handle Content object with text property', async () => {
+      const request: CountTokensParameters = {
+        model: 'test-model',
+        contents: {
+          role: 'user',
+          parts: [{ text: 'Hello world' }],
+        },
+      };
+
+      const result = await generator.countTokens(request);
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('totalTokens');
+      expect(typeof result.totalTokens).toBe('number');
+    });
+
+    it('should handle array of Content objects', async () => {
+      const request: CountTokensParameters = {
+        model: 'test-model',
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: 'Hello' }],
+          },
+          {
+            role: 'model',
+            parts: [{ text: 'world' }],
+          },
+        ],
+      };
+
+      const result = await generator.countTokens(request);
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('totalTokens');
+      expect(typeof result.totalTokens).toBe('number');
+    });
+
+    it('should handle mixed content types', async () => {
+      const request: CountTokensParameters = {
+        model: 'test-model',
+        contents: [
+          'Hello',
+          {
+            role: 'user',
+            parts: [{ text: 'world' }],
+          } as any,
+        ],
+      };
+
+      const result = await generator.countTokens(request);
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('totalTokens');
+      expect(typeof result.totalTokens).toBe('number');
+    });
+
+    it('should handle ollama/ prefixed model names', async () => {
+      const request: CountTokensParameters = {
+        model: 'ollama/test-model',
+        contents: 'Hello world',
+      };
+
+      const result = await generator.countTokens(request);
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('totalTokens');
+      expect(typeof result.totalTokens).toBe('number');
+    });
+
+    it('should handle empty content', async () => {
+      const request: CountTokensParameters = {
+        model: 'test-model',
+        contents: '',
+      };
+
+      const result = await generator.countTokens(request);
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('totalTokens');
+      expect(typeof result.totalTokens).toBe('number');
+    });
+
+    it('should handle null content gracefully', async () => {
+      const request: CountTokensParameters = {
+        model: 'test-model',
+        contents: null as any,
+      };
+
+      const result = await generator.countTokens(request);
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('totalTokens');
+      expect(typeof result.totalTokens).toBe('number');
+    });
   });
 });

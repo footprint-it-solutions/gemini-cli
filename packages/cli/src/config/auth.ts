@@ -14,7 +14,7 @@ export async function validateAuthMethod(
 
 export async function validateAuthMethodWithSettings(
   authMethod: AuthType,
-  settings: any,
+  _settings: unknown,
 ): Promise<string | null> {
   const methodStr = String(authMethod).toLowerCase();
   // Simple passthrough for common methods
@@ -26,7 +26,9 @@ export async function validateAuthMethodWithSettings(
     authMethod === AuthType.GATEWAY ||
     methodStr === 'gateway' ||
     authMethod === AuthType.OLLAMA ||
-    methodStr === 'ollama'
+    methodStr === 'ollama' ||
+    authMethod === AuthType.OLLAMA_STREAMING ||
+    methodStr === 'ollama-streaming'
   ) {
     return null;
   }
@@ -65,7 +67,12 @@ export async function validateAuthMethodWithSettings(
     return null;
   }
 
-  if (authMethod === AuthType.BEDROCK || methodStr === 'bedrock') {
+  if (
+    authMethod === AuthType.BEDROCK ||
+    methodStr === 'bedrock' ||
+    authMethod === AuthType.BEDROCK_NOVA ||
+    methodStr === 'bedrock-nova'
+  ) {
     // Bedrock typically uses AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, etc.
     // or AWS_PROFILE, or IRSA (AWS_ROLE_ARN).
     // In some environments (like EC2/EKS), credentials might be provided

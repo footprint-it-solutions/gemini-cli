@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { BedrockContentGenerator } from './bedrockProvider.js';
+import { BedrockNovaContentGenerator } from './bedrockNovaProvider.js';
 import type { GenerateContentResponse } from '@google/genai';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { debugLogger } from '../../utils/debugLogger.js';
@@ -25,18 +25,18 @@ vi.mock('@aws-sdk/credential-providers', () => ({
   fromNodeProviderChain: vi.fn(),
 }));
 
-describe('BedrockContentGenerator (Nova Support)', () => {
-  let generator: BedrockContentGenerator;
+describe('BedrockNovaContentGenerator (Nova Support)', () => {
+  let generator: BedrockNovaContentGenerator;
   let mockClient: { send: any };
 
   beforeEach(() => {
-    generator = new BedrockContentGenerator('us-east-1');
+    generator = new BedrockNovaContentGenerator('us-east-1');
     mockClient = (generator as unknown as { client: { send: any } }).client;
   });
 
   describe('initialization', () => {
     it('should use the provided region and profile', () => {
-      new BedrockContentGenerator('us-west-2', 'my-profile');
+      new BedrockNovaContentGenerator('us-west-2', 'my-profile');
       expect(fromNodeProviderChain).toHaveBeenCalledWith(
         expect.objectContaining({
           profile: 'my-profile',
@@ -55,7 +55,7 @@ describe('BedrockContentGenerator (Nova Support)', () => {
       vi.mocked(BedrockRuntimeClient).mockClear();
 
       const uniqueProfile = `test-profile-${Math.random()}`;
-      new BedrockContentGenerator('us-west-2', uniqueProfile);
+      new BedrockNovaContentGenerator('us-west-2', uniqueProfile);
 
       // Capture the constructor arguments of BedrockRuntimeClient
       const constructorCalls = vi.mocked(BedrockRuntimeClient).mock.calls;
@@ -89,7 +89,7 @@ describe('BedrockContentGenerator (Nova Support)', () => {
       vi.mocked(BedrockRuntimeClient).mockClear();
 
       const uniqueProfile = `test-profile-${Math.random()}`;
-      new BedrockContentGenerator('us-west-2', uniqueProfile);
+      new BedrockNovaContentGenerator('us-west-2', uniqueProfile);
 
       const constructorCalls = vi.mocked(BedrockRuntimeClient).mock.calls;
       const passedOptions = constructorCalls[0][0] as any;

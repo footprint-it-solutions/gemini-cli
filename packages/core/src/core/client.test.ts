@@ -38,16 +38,21 @@ import {
 import { getCoreSystemPrompt } from './prompts.js';
 import { DEFAULT_GEMINI_MODEL_AUTO } from '../config/models.js';
 import { FileDiscoveryService } from '../services/fileDiscoveryService.js';
-import { checkNextSpeakerBedrock } from '../bedrock/bedrockContinuation.js';
+import { checkNextSpeakerBedrockNova } from '../bedrock-nova/bedrockNovaContinuation.js';
 
-vi.mock('../bedrock/bedrockContinuation.js', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('../bedrock/bedrockContinuation.js')>();
-  return {
-    ...actual,
-    checkNextSpeakerBedrock: vi.fn(),
-  };
-});
+vi.mock(
+  '../bedrock-nova/bedrockNovaContinuation.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../bedrock-nova/bedrockNovaContinuation.js')
+      >();
+    return {
+      ...actual,
+      checkNextSpeakerBedrockNova: vi.fn(),
+    };
+  },
+);
 import { setSimulate429 } from '../utils/testUtils.js';
 import { tokenLimit } from './tokenLimits.js';
 import { ideContextStore } from '../ide/ideContext.js';
@@ -1362,13 +1367,15 @@ ${JSON.stringify(
       vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
         contentGeneratorConfig,
       );
-      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
-        decision: 'continue',
-        confidence: 'high',
-        signals: ['classifier_continue'],
-        reason: 'The turn is a stranded action preamble.',
-        source: 'micro',
-      });
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrockNova)
+        .mockResolvedValue({
+          decision: 'continue',
+          confidence: 'high',
+          signals: ['classifier_continue'],
+          reason: 'The turn is a stranded action preamble.',
+          source: 'micro',
+        });
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1489,13 +1496,15 @@ ${JSON.stringify(
         ]),
       };
       client['chat'] = mockChat as GeminiChat;
-      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
-        decision: 'continue',
-        confidence: 'high',
-        signals: ['classifier_continue', 'read_flow_narration'],
-        reason: 'The turn should continue reading.',
-        source: 'micro',
-      });
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrockNova)
+        .mockResolvedValue({
+          decision: 'continue',
+          confidence: 'high',
+          signals: ['classifier_continue', 'read_flow_narration'],
+          reason: 'The turn should continue reading.',
+          source: 'micro',
+        });
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1536,13 +1545,15 @@ ${JSON.stringify(
       vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
         contentGeneratorConfig,
       );
-      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
-        decision: 'continue',
-        confidence: 'high',
-        signals: ['classifier_continue'],
-        reason: 'The turn should continue fixing.',
-        source: 'micro',
-      });
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrockNova)
+        .mockResolvedValue({
+          decision: 'continue',
+          confidence: 'high',
+          signals: ['classifier_continue'],
+          reason: 'The turn should continue fixing.',
+          source: 'micro',
+        });
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1583,14 +1594,16 @@ ${JSON.stringify(
       vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
         contentGeneratorConfig,
       );
-      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
-        decision: 'continue',
-        confidence: 'high',
-        signals: ['classifier_continue'],
-        reason:
-          'The turn should continue once, then stop on repeated no-progress.',
-        source: 'micro',
-      });
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrockNova)
+        .mockResolvedValue({
+          decision: 'continue',
+          confidence: 'high',
+          signals: ['classifier_continue'],
+          reason:
+            'The turn should continue once, then stop on repeated no-progress.',
+          source: 'micro',
+        });
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1615,6 +1628,97 @@ ${JSON.stringify(
 
       expect(microSpy).toHaveBeenCalledTimes(2);
       expect(callCount).toBe(2);
+    });
+
+    it('should force Bedrock fallback chaining when response ends with a colon, regardless of no new tool progress', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrockNova)
+        .mockResolvedValue(null);
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        const response =
+          callCount === 1
+            ? 'Here is the first colon:'
+            : callCount === 2
+              ? 'Here is the second colon:'
+              : 'Done.';
+        (this as unknown as Turn).finishReason = FinishReason.OTHER;
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-colon-fallback',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(microSpy).toHaveBeenCalledTimes(1);
+      expect(callCount).toBe(3);
+    });
+
+    it('should force Bedrock fallback chaining when response ends with MAX_TOKENS, regardless of no new tool progress', async () => {
+      const { checkNextSpeaker } =
+        await import('../utils/nextSpeakerChecker.js');
+      const mockCheckNextSpeaker = vi.mocked(checkNextSpeaker);
+      mockCheckNextSpeaker.mockResolvedValue(null);
+
+      const contentGeneratorConfig: ContentGeneratorConfig = {
+        apiKey: 'test-key',
+        vertexai: false,
+        authType: AuthType.BEDROCK,
+      };
+      vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
+        contentGeneratorConfig,
+      );
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrockNova)
+        .mockResolvedValue(null);
+
+      let callCount = 0;
+      mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
+        callCount++;
+        const response =
+          callCount === 1
+            ? 'Truncated output '
+            : callCount === 2
+              ? 'Truncated output 2 '
+              : 'Done.';
+        (this as unknown as Turn).finishReason =
+          callCount <= 2 ? FinishReason.MAX_TOKENS : FinishReason.STOP;
+        this.getResponseText.mockReturnValue(response);
+        yield { type: GeminiEventType.Content, value: response };
+      });
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Start conversation' }],
+        new AbortController().signal,
+        'prompt-id-bedrock-maxtokens-fallback',
+      );
+      while (!(await stream.next()).done) {
+        // consume
+      }
+
+      expect(microSpy).toHaveBeenCalledTimes(1); // turn 3 response 'Done.' is uncertain and calls checkNextSpeakerBedrockNova once.
+      expect(callCount).toBe(3);
     });
 
     it('should allow a second Bedrock fallback after new tool progress occurs', async () => {
@@ -1710,13 +1814,15 @@ ${JSON.stringify(
         }),
       };
       client['chat'] = mockChat as GeminiChat;
-      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
-        decision: 'continue',
-        confidence: 'high',
-        signals: ['classifier_continue'],
-        reason: 'The turn should continue after new tool progress.',
-        source: 'micro',
-      });
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrockNova)
+        .mockResolvedValue({
+          decision: 'continue',
+          confidence: 'high',
+          signals: ['classifier_continue'],
+          reason: 'The turn should continue after new tool progress.',
+          source: 'micro',
+        });
 
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
         callCount++;
@@ -1761,7 +1867,7 @@ ${JSON.stringify(
       vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
         contentGeneratorConfig,
       );
-      const microSpy = vi.mocked(checkNextSpeakerBedrock);
+      const microSpy = vi.mocked(checkNextSpeakerBedrockNova);
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1798,7 +1904,7 @@ ${JSON.stringify(
       vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue(
         contentGeneratorConfig,
       );
-      const microSpy = vi.mocked(checkNextSpeakerBedrock);
+      const microSpy = vi.mocked(checkNextSpeakerBedrockNova);
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1869,13 +1975,15 @@ ${JSON.stringify(
         authType: AuthType.BEDROCK,
       });
 
-      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
-        decision: 'continue',
-        confidence: 'high',
-        signals: ['classifier_continue'],
-        reason: 'The turn looks stranded.',
-        source: 'micro',
-      });
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrockNova)
+        .mockResolvedValue({
+          decision: 'continue',
+          confidence: 'high',
+          signals: ['classifier_continue'],
+          reason: 'The turn looks stranded.',
+          source: 'micro',
+        });
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1910,13 +2018,15 @@ ${JSON.stringify(
         authType: AuthType.BEDROCK,
       });
 
-      const microSpy = vi.mocked(checkNextSpeakerBedrock).mockResolvedValue({
-        decision: 'stop',
-        confidence: 'medium',
-        signals: ['classifier_stop'],
-        reason: 'The turn should stop.',
-        source: 'micro',
-      });
+      const microSpy = vi
+        .mocked(checkNextSpeakerBedrockNova)
+        .mockResolvedValue({
+          decision: 'stop',
+          confidence: 'medium',
+          signals: ['classifier_stop'],
+          reason: 'The turn should stop.',
+          source: 'micro',
+        });
 
       let callCount = 0;
       mockTurnRunFn.mockImplementation(async function* (this: MockTurnContext) {
@@ -1951,7 +2061,7 @@ ${JSON.stringify(
       });
 
       const microSpy = vi
-        .mocked(checkNextSpeakerBedrock)
+        .mocked(checkNextSpeakerBedrockNova)
         .mockResolvedValue(null);
 
       let callCount = 0;
@@ -2731,7 +2841,7 @@ ${JSON.stringify(
       );
     });
 
-    it('should propagate InvalidStream events without injecting "Please continue." or recursing', async () => {
+    it('should propagate InvalidStream events without injecting "Continue" or recursing', async () => {
       // Arrange: a single turn that yields an InvalidStream event.
       const mockStream = (async function* () {
         yield { type: GeminiEventType.InvalidStream };
@@ -2756,7 +2866,7 @@ ${JSON.stringify(
       const events = await fromAsync(stream);
 
       // Assert: the InvalidStream event is forwarded to the consumer and the
-      // turn ends. No "System: Please continue." is injected and turn.run is
+      // turn ends. No "System: Continue" is injected and turn.run is
       // not called a second time.
       expect(events).toEqual([
         { type: GeminiEventType.ModelInfo, value: 'default-routed-model' },

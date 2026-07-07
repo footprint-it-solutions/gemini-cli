@@ -33,8 +33,9 @@ import type { LlmRole } from '../telemetry/llmRole.js';
 import { ModelMappingContentGenerator } from './modelMappingContentGenerator.js';
 import { CCPA_AI_MODEL_MAPPINGS } from '../config/models.js';
 import { OpenAIContentGenerator } from './providers/openAiProvider.js';
-import { BedrockContentGenerator } from './providers/bedrockProvider.js';
+import { BedrockNovaContentGenerator } from './providers/bedrockNovaProvider.js';
 import { OllamaContentGenerator } from './providers/ollamaProvider.js';
+import { OllamaStreamingContentGenerator } from './providers/ollamaStreamingProvider.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -73,7 +74,9 @@ export enum AuthType {
   GATEWAY = 'gateway',
   OPENAI = 'openai',
   BEDROCK = 'bedrock',
+  BEDROCK_NOVA = 'bedrock-nova',
   OLLAMA = 'ollama',
+  OLLAMA_STREAMING = 'ollama-streaming',
 }
 
 /**
@@ -89,11 +92,17 @@ export enum AuthType {
  */
 export function getAuthTypeFromEnv(modelName?: string): AuthType | undefined {
   const model = modelName || process.env['GEMINI_MODEL'];
+  if (model?.startsWith('bedrock-nova/')) {
+    return AuthType.BEDROCK_NOVA;
+  }
   if (model?.startsWith('bedrock/')) {
     return AuthType.BEDROCK;
   }
   if (model?.startsWith('openai/')) {
     return AuthType.OPENAI;
+  }
+  if (model?.startsWith('ollama-stream/')) {
+    return AuthType.OLLAMA_STREAMING;
   }
   if (model?.startsWith('ollama/')) {
     return AuthType.OLLAMA;
@@ -218,14 +227,14 @@ export async function createContentGeneratorConfig(
     return contentGeneratorConfig;
   }
 
-  if (authType === AuthType.BEDROCK) {
+  if (authType === AuthType.BEDROCK || authType === AuthType.BEDROCK_NOVA) {
     // Bedrock usually uses AWS credentials (env vars or profile),
     // so we don't necessarily need an 'apiKey' field here,
     // but we can pass whatever is provided.
     return contentGeneratorConfig;
   }
 
-  if (authType === AuthType.OLLAMA) {
+  if (authType === AuthType.OLLAMA || authType === AuthType.OLLAMA_STREAMING) {
     contentGeneratorConfig.baseUrl = process.env['OLLAMA_BASE_URL'] || baseUrl;
     return contentGeneratorConfig;
   }
@@ -366,14 +375,40 @@ export async function createContentGenerator(
         process.env['AWS_REGION'] ||
         process.env['AWS_DEFAULT_REGION'];
       return new LoggingContentGenerator(
-        new BedrockContentGenerator(resolvedRegion, config.awsProfile),
+        new BedrockNovaContentGenerator(
+          resolvedRegion,
+          config.awsProfile,
+          'bedrock-debug.log',
+        ),
+        gcConfig,
+      );
+    }
+
+    if (config.authType === AuthType.BEDROCK_NOVA) {
+      const resolvedRegion =
+        process.env['AWS_BEDROCK_REGION'] ||
+        process.env['AWS_REGION'] ||
+        process.env['AWS_DEFAULT_REGION'];
+      return new LoggingContentGenerator(
+        new BedrockNovaContentGenerator(
+          resolvedRegion,
+          config.awsProfile,
+          'bedrock-nova-debug.log',
+        ),
         gcConfig,
       );
     }
 
     if (config.authType === AuthType.OLLAMA) {
       return new LoggingContentGenerator(
-        new OllamaContentGenerator(config.baseUrl),
+        new OllamaContentGenerator({ baseUrl: config.baseUrl }),
+        gcConfig,
+      );
+    }
+
+    if (config.authType === AuthType.OLLAMA_STREAMING) {
+      return new LoggingContentGenerator(
+        new OllamaStreamingContentGenerator({ baseUrl: config.baseUrl }),
         gcConfig,
       );
     }

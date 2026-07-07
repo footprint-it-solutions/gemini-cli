@@ -111,6 +111,13 @@ export function resolveCompressionModelConfigAlias(
   if (authType === AuthType.BEDROCK) {
     return 'bedrock-chat-compression';
   }
+  if (
+    authType === AuthType.OLLAMA ||
+    authType === AuthType.OLLAMA_STREAMING ||
+    authType === AuthType.OPENAI
+  ) {
+    return model;
+  }
 
   switch (model) {
     case PREVIEW_GEMINI_MODEL:

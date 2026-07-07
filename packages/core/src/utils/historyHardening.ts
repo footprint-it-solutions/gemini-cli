@@ -330,7 +330,7 @@ function enforceRoleConstraints(
       id: deriveStableId([result[result.length - 1].id, 'sentinel_end']),
       content: {
         role: 'user',
-        parts: [{ text: 'Please continue.' }],
+        parts: [{ text: 'Continue' }],
       },
     });
   }
@@ -410,6 +410,5 @@ export function scrubPart(part: Part): Part {
     scrubbed['codeExecutionResult'] = part.codeExecutionResult;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  return scrubbed as unknown as Part;
+  return scrubbed;
 }

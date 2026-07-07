@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Ollama, type Message } from 'ollama';
+import { Ollama } from 'ollama';
 import {
+  GoogleGenAI,
   type GenerateContentParameters,
   type GenerateContentResponse,
   type CountTokensParameters,
@@ -13,19 +14,38 @@ import {
   type EmbedContentParameters,
   type EmbedContentResponse,
   type Content,
-  type Part,
-  FinishReason,
 } from '@google/genai';
 import type { ContentGenerator } from '../contentGenerator.js';
 import type { LlmRole } from '../../telemetry/llmRole.js';
+import {
+  parseOllamaResponse,
+  handleOllamaError,
+  validateOllamaModel,
+  convertToOllamaMessages,
+  convertToolsToOllamaFormat,
+} from './ollamaUtils.js';
+import { ProviderLogger } from './providerLogger.js';
+import {
+  type OllamaConfig,
+  DEFAULT_OLLAMA_CONFIG,
+} from './ollamaConfigSchema.js';
+import { debugLogger } from '../../utils/debugLogger.js';
+import { estimateTokenCountSync } from '../../utils/tokenCalculation.js';
 
 export class OllamaContentGenerator implements ContentGenerator {
   private client: Ollama;
+  private config: OllamaConfig;
 
-  constructor(host?: string) {
+  constructor(config?: Partial<OllamaConfig>) {
+    this.config = {
+      ...DEFAULT_OLLAMA_CONFIG,
+      ...(config || {}),
+    };
+
     this.client = new Ollama({
-      host: host || process.env['OLLAMA_HOST'] || 'http://localhost:11434',
-    });
+      host: this.config.baseUrl,
+      timeout: this.config.timeout,
+    } as any);
   }
 
   async generateContent(
@@ -33,26 +53,56 @@ export class OllamaContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<GenerateContentResponse> {
-    const messages = this.mapContentsToMessages(
-      request.contents as Content[],
-      request.config?.systemInstruction as any,
-    );
-    const tools = this.mapTools(request.config?.tools);
+    const modelName = request.model.startsWith('ollama/')
+      ? request.model.slice(7)
+      : request.model;
 
-    const response = await this.client.chat({
-      model: request.model,
-      messages,
-      tools: tools as any,
-      options: {
-        temperature: request.config?.temperature,
-        num_predict: request.config?.maxOutputTokens,
-        top_p: request.config?.topP,
-        stop: request.config?.stopSequences,
-      },
-      stream: false,
-    });
+    // Validate the model exists outside try block to avoid double-wrapping user-friendly errors
+    await validateOllamaModel(modelName, this.config.baseUrl);
 
-    return this.mapResponse(response);
+    try {
+      const messages = convertToOllamaMessages(
+        request.contents as Content[],
+        request.config?.systemInstruction as any,
+      );
+      const tools = convertToolsToOllamaFormat(request.config?.tools);
+
+      const requestPayload = {
+        messages,
+        tools,
+        options: {
+          temperature: request.config?.temperature ?? this.config.temperature,
+          num_predict: request.config?.maxOutputTokens ?? this.config.maxTokens,
+          top_p: request.config?.topP ?? this.config.topP,
+          stop: request.config?.stopSequences ?? this.config.stopSequences,
+          ...(request.config as any)?.options,
+        },
+      };
+
+      ProviderLogger.logRequest('ollama-debug.log', modelName, requestPayload);
+
+      console.log(
+        `[Ollama DEBUG] Sending request to Ollama: messages=${messages.length}, tools=${tools ? tools.length : 0}`,
+      );
+      const start = Date.now();
+      const response = await this.client.chat({
+        model: modelName,
+        messages,
+        tools,
+        options: requestPayload.options,
+        stream: false,
+      });
+      console.log(
+        `[Ollama DEBUG] Response received in ${Date.now() - start}ms: message=${JSON.stringify(response.message)}`,
+      );
+
+      ProviderLogger.logResponse('ollama-debug.log', modelName, response);
+
+      return parseOllamaResponse(response);
+    } catch (error) {
+      ProviderLogger.logError('ollama-debug.log', modelName, error);
+      throw new Error(handleOllamaError(error, modelName));
+    }
   }
 
   async generateContentStream(
@@ -61,217 +111,159 @@ export class OllamaContentGenerator implements ContentGenerator {
     _role: LlmRole,
     _requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
-    const messages = this.mapContentsToMessages(
-      request.contents as Content[],
-      request.config?.systemInstruction as any,
-    );
-    const tools = this.mapTools(request.config?.tools);
+    // Intercept and delegate 'web-search' model calls to Gemini if a real API Key is present
+    if (request.model === 'web-search') {
+      const apiKey = process.env['GEMINI_API_KEY'];
+      if (apiKey && apiKey !== 'test-api-key') {
+        const ai = new GoogleGenAI({ apiKey });
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: request.contents as any,
+          config: {
+            tools: [{ googleSearch: {} }],
+          },
+        });
+        const generator = async function* () {
+          yield response as any as GenerateContentResponse;
+        };
+        return generator();
+      } else {
+        throw new Error(
+          'Web search is not supported by Ollama. A valid GEMINI_API_KEY is required to fall back to Gemini search grounding.',
+        );
+      }
+    }
 
-    const stream = await this.client.chat({
-      model: request.model,
-      messages,
-      tools: tools as any,
-      options: {
-        temperature: request.config?.temperature,
-        num_predict: request.config?.maxOutputTokens,
-        top_p: request.config?.topP,
-        stop: request.config?.stopSequences,
-      },
-      stream: true,
-    });
+    const modelName = request.model.startsWith('ollama/')
+      ? request.model.slice(7)
+      : request.model;
 
-    return this.mapStreamResponse(stream);
+    // Validate the model exists outside try block to avoid double-wrapping user-friendly errors
+    await validateOllamaModel(modelName, this.config.baseUrl);
+
+    try {
+      debugLogger.log(
+        `[Ollama] Executing content generation. Forcing non-streaming for absolute reliability, format security, and visual simulator deadlock prevention.`,
+      );
+      const response = await this.generateContent(
+        request,
+        _userPromptId,
+        _role,
+      );
+      return (async function* () {
+        yield response;
+      })();
+    } catch (error) {
+      throw new Error(handleOllamaError(error, modelName));
+    }
   }
 
   async countTokens(
-    _request: CountTokensParameters,
+    request: CountTokensParameters,
   ): Promise<CountTokensResponse> {
-    return { totalTokens: 0 };
+    let modelName = '';
+    try {
+      // Handle ollama/ prefix if present (similar to bedrock/ handling)
+      modelName = request.model.startsWith('ollama/')
+        ? request.model.slice(7)
+        : request.model;
+
+      // For Ollama, we don't have a direct token counting API.
+      // We'll use an estimate based on the text content.
+      const parts: any[] = [];
+
+      // Extract all text content from the request contents
+      if (Array.isArray(request.contents)) {
+        // Handle array of Content items
+        for (const content of request.contents) {
+          // If it's a string, push as text part
+          if (typeof content === 'string') {
+            parts.push({ text: content });
+          } else if (
+            content &&
+            typeof content === 'object' &&
+            'text' in content
+          ) {
+            // Single Content with text property
+            parts.push({ text: content.text });
+          } else if (
+            content &&
+            typeof content === 'object' &&
+            'parts' in content
+          ) {
+            // Handle Content with parts
+            const contentParts = content.parts as any[];
+            if (Array.isArray(contentParts)) {
+              for (const part of contentParts) {
+                if (
+                  typeof part === 'object' &&
+                  part !== null &&
+                  'text' in part
+                ) {
+                  parts.push({ text: part.text });
+                }
+              }
+            }
+          }
+        }
+      } else {
+        // Handle single Content item or direct string
+        if (typeof request.contents === 'string') {
+          parts.push({ text: request.contents });
+        } else if (
+          request.contents &&
+          typeof request.contents === 'object' &&
+          'text' in request.contents
+        ) {
+          parts.push({ text: request.contents.text });
+        } else if (
+          request.contents &&
+          typeof request.contents === 'object' &&
+          'parts' in request.contents
+        ) {
+          // Handle Content with parts
+          const contentParts = request.contents.parts as any[];
+          if (Array.isArray(contentParts)) {
+            for (const part of contentParts) {
+              if (typeof part === 'object' && part !== null && 'text' in part) {
+                parts.push({ text: part.text });
+              }
+            }
+          }
+        }
+      }
+
+      return { totalTokens: estimateTokenCountSync(parts) };
+    } catch (error) {
+      throw new Error(handleOllamaError(error, modelName || 'unknown'));
+    }
   }
 
   async embedContent(
     request: EmbedContentParameters,
   ): Promise<EmbedContentResponse> {
-    const response = await this.client.embeddings({
-      model: request.model,
-      prompt: (request.contents as any).parts?.[0]?.text || '',
-    });
-    return {
-      embeddings: [
-        {
-          values: response.embedding,
-        },
-      ],
-    } as EmbedContentResponse;
-  }
+    const modelName = request.model.startsWith('ollama/')
+      ? request.model.slice(7)
+      : request.model;
 
-  private mapContentsToMessages(
-    contents: Content[],
-    systemInstruction?: string | Part | Part[] | Content,
-  ): Message[] {
-    const messages: Message[] = [];
+    // Validate the model exists outside try block to avoid double-wrapping user-friendly errors
+    await validateOllamaModel(modelName, this.config.baseUrl);
 
-    if (systemInstruction) {
-      let systemText = '';
-      if (typeof systemInstruction === 'string') {
-        systemText = systemInstruction;
-      } else if (Array.isArray(systemInstruction)) {
-        systemText = systemInstruction
-          .map((p) => (p as any).text || '')
-          .join('\n');
-      } else if (
-        systemInstruction &&
-        'parts' in systemInstruction &&
-        systemInstruction.parts
-      ) {
-        systemText = systemInstruction.parts
-          .map((p) => p.text || '')
-          .join('\n');
-      } else {
-        systemText = (systemInstruction as Part).text || '';
-      }
+    try {
+      const response = await this.client.embeddings({
+        model: modelName,
+        prompt: (request.contents as any).parts?.[0]?.text || '',
+      });
 
-      if (systemText) {
-        messages.push({ role: 'system', content: systemText });
-      }
-    }
-
-    for (const content of contents) {
-      const role = content.role === 'model' ? 'assistant' : 'user';
-      const parts = content.parts || [];
-
-      let textContent = '';
-      const toolCalls: any[] = [];
-
-      for (const part of parts) {
-        if (part.text) {
-          textContent += part.text;
-        }
-        if (part.functionCall) {
-          toolCalls.push({
-            function: {
-              name: part.functionCall.name,
-              arguments: part.functionCall.args,
-            },
-          });
-        }
-        if (part.functionResponse) {
-          messages.push({
-            role: 'tool',
-            content: JSON.stringify(part.functionResponse.response),
-          });
-        }
-      }
-
-      if (textContent || toolCalls.length > 0) {
-        messages.push({
-          role,
-          content: textContent,
-          tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-        });
-      }
-    }
-
-    return messages;
-  }
-
-  private mapTools(tools?: any[]): any[] | undefined {
-    if (!tools || tools.length === 0) return undefined;
-
-    const ollamaTools: any[] = [];
-    for (const tool of tools) {
-      if (tool.functionDeclarations) {
-        for (const fd of tool.functionDeclarations) {
-          ollamaTools.push({
-            type: 'function',
-            function: {
-              name: fd.name,
-              description: fd.description,
-              parameters: fd.parameters as any,
-            },
-          });
-        }
-      }
-    }
-    return ollamaTools.length > 0 ? ollamaTools : undefined;
-  }
-
-  private mapResponse(response: any): GenerateContentResponse {
-    const parts: Part[] = [];
-
-    if (response.message?.content) {
-      parts.push({ text: response.message.content });
-    }
-
-    if (response.message?.tool_calls) {
-      for (const tc of response.message.tool_calls) {
-        parts.push({
-          functionCall: {
-            name: tc.function.name,
-            args: tc.function.arguments,
-          },
-        });
-      }
-    }
-
-    return {
-      candidates: [
-        {
-          content: {
-            role: 'model',
-            parts,
-          },
-          finishReason: FinishReason.STOP,
-        },
-      ],
-      usageMetadata: {
-        promptTokenCount: response.prompt_eval_count,
-        candidatesTokenCount: response.eval_count,
-        totalTokenCount:
-          (response.prompt_eval_count || 0) + (response.eval_count || 0),
-      },
-    } as GenerateContentResponse;
-  }
-
-  private async *mapStreamResponse(
-    stream: AsyncIterable<any>,
-  ): AsyncGenerator<GenerateContentResponse> {
-    for await (const chunk of stream) {
-      const parts: Part[] = [];
-      if (chunk.message?.content) {
-        parts.push({ text: chunk.message.content });
-      }
-
-      if (chunk.message?.tool_calls) {
-        for (const tc of chunk.message.tool_calls) {
-          parts.push({
-            functionCall: {
-              name: tc.function.name,
-              args: tc.function.arguments,
-            },
-          });
-        }
-      }
-
-      yield {
-        candidates: [
+      return {
+        embeddings: [
           {
-            content: {
-              role: 'model',
-              parts,
-            },
-            finishReason: chunk.done ? FinishReason.STOP : undefined,
+            values: response.embedding,
           },
         ],
-        usageMetadata: chunk.done
-          ? {
-              promptTokenCount: chunk.prompt_eval_count,
-              candidatesTokenCount: chunk.eval_count,
-              totalTokenCount:
-                (chunk.prompt_eval_count || 0) + (chunk.eval_count || 0),
-            }
-          : undefined,
-      } as GenerateContentResponse;
+      } as EmbedContentResponse;
+    } catch (error) {
+      throw new Error(handleOllamaError(error, modelName));
     }
   }
 }
