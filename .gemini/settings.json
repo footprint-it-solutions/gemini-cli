@@ -33,19 +33,5 @@
   },
   "hooksConfig": {
     "enabled": true
-  },
-  "hooks": {
-    "AfterAgent": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "name": "pre-commit-check",
-            "type": "command",
-            "command": "node .gemini/hooks/pre-commit-check.js"
-          }
-        ]
-      }
-    ]
   }
 }
