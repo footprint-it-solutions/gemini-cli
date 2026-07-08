@@ -15,8 +15,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "build": "tsc",
-    "bundle:browser-mcp": "esbuild src/mcp/browser/index.ts --bundle --outfile=dist/mcp-browser.js --format=esm --minify",
+    "build": "node ../../scripts/build_package.js",
+    "bundle:browser-mcp": "node scripts/bundle-browser-mcp.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
