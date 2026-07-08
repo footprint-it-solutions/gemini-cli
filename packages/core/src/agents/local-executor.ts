@@ -30,6 +30,7 @@ import {
   MCP_TOOL_PREFIX,
 } from '../tools/mcp-tool.js';
 import { CompressionStatus } from '../core/turn.js';
+import { AuthType } from '../core/contentGenerator.js';
 import { type ToolCallRequestInfo } from '../scheduler/types.js';
 import { ChatCompressionService } from '../context/chatCompressionService.js';
 import { getDirectoryContextString } from '../utils/environmentContext.js';
@@ -430,6 +431,13 @@ export class LocalAgentExecutor<TOutput extends z.ZodTypeAny> {
       default:
         throw new Error(`Unknown terminate reason: ${reason}`);
     }
+    const isBedrock =
+      this.context.config.getContentGeneratorConfig()?.authType ===
+      AuthType.BEDROCK_NOVA;
+    if (isBedrock) {
+      return `${explanation} You have one final chance to complete the task with a short grace period. You MUST call \`complete_task\` immediately with your best answer. Please wrap your response inside \`nova_response_schema\` with your status update and tools inside. Do not invoke other tools besides \`complete_task\`.`;
+    }
+
     return `${explanation} You have one final chance to complete the task with a short grace period. You MUST call \`${COMPLETE_TASK_TOOL_NAME}\` immediately with your best answer and explain that your investigation was interrupted. Do not call any other tools.`;
   }
 

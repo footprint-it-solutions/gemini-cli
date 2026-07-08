@@ -83,6 +83,36 @@ const FORCED_SCHEMA_TOOL: Tool = {
 export const clientCache = new Map<string, BedrockRuntimeClient>();
 
 /**
+ * Helper to map standard Gemini-formatted tools (or function declarations)
+ * to Bedrock Converse API-compatible Tool specs.
+ */
+function mapGeminiToolsToBedrock(tools: any[]): Tool[] {
+  const bedrockTools: Tool[] = [];
+  if (!tools) return bedrockTools;
+
+  for (const t of tools) {
+    if (t && Array.isArray(t.functionDeclarations)) {
+      for (const decl of t.functionDeclarations) {
+        const params = decl.parametersJsonSchema || decl.parameters || {};
+        bedrockTools.push({
+          toolSpec: {
+            name: decl.name,
+            description: decl.description || '',
+            inputSchema: {
+              json: params,
+            },
+          },
+        });
+      }
+    } else if (t && t.toolSpec) {
+      // Already in Bedrock format
+      bedrockTools.push(t);
+    }
+  }
+  return bedrockTools;
+}
+
+/**
  * A consolidated content generator for Bedrock Nova models.
  * Uses constant tool forcing to ensure deterministic parsing of thoughts and actions.
  */
@@ -199,6 +229,34 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
 
     const modelId = this.resolveModelId(request.model);
 
+    const isMainAgent = _role === LlmRole.MAIN || _role === LlmRole.SUBAGENT;
+    let toolConfig: any = undefined;
+
+    if (isMainAgent) {
+      toolConfig = {
+        tools: [FORCED_SCHEMA_TOOL],
+        toolChoice: {
+          tool: {
+            name: 'nova_response_schema',
+          },
+        },
+      };
+    } else if (request.config?.tools && request.config.tools.length > 0) {
+      const mappedTools = mapGeminiToolsToBedrock(request.config.tools);
+      if (mappedTools.length > 0) {
+        toolConfig = {
+          tools: mappedTools,
+        };
+        if (mappedTools.length === 1 && mappedTools[0].toolSpec?.name) {
+          toolConfig.toolChoice = {
+            tool: {
+              name: mappedTools[0].toolSpec.name,
+            },
+          };
+        }
+      }
+    }
+
     const converseParams = {
       modelId,
       messages,
@@ -209,14 +267,7 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
         topP: request.config?.topP,
         stopSequences: request.config?.stopSequences,
       },
-      toolConfig: {
-        tools: [FORCED_SCHEMA_TOOL],
-        toolChoice: {
-          tool: {
-            name: 'nova_response_schema',
-          },
-        },
-      },
+      ...(toolConfig ? { toolConfig } : {}),
     };
 
     ProviderLogger.logRequest(this.logFilename, modelId, converseParams);
@@ -261,6 +312,34 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
 
     const modelId = this.resolveModelId(request.model);
 
+    const isMainAgent = _role === LlmRole.MAIN || _role === LlmRole.SUBAGENT;
+    let toolConfig: any = undefined;
+
+    if (isMainAgent) {
+      toolConfig = {
+        tools: [FORCED_SCHEMA_TOOL],
+        toolChoice: {
+          tool: {
+            name: 'nova_response_schema',
+          },
+        },
+      };
+    } else if (request.config?.tools && request.config.tools.length > 0) {
+      const mappedTools = mapGeminiToolsToBedrock(request.config.tools);
+      if (mappedTools.length > 0) {
+        toolConfig = {
+          tools: mappedTools,
+        };
+        if (mappedTools.length === 1 && mappedTools[0].toolSpec?.name) {
+          toolConfig.toolChoice = {
+            tool: {
+              name: mappedTools[0].toolSpec.name,
+            },
+          };
+        }
+      }
+    }
+
     const converseStreamParams = {
       modelId,
       messages,
@@ -271,14 +350,7 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
         topP: request.config?.topP,
         stopSequences: request.config?.stopSequences,
       },
-      toolConfig: {
-        tools: [FORCED_SCHEMA_TOOL],
-        toolChoice: {
-          tool: {
-            name: 'nova_response_schema',
-          },
-        },
-      },
+      ...(toolConfig ? { toolConfig } : {}),
     };
 
     ProviderLogger.logRequest(this.logFilename, modelId, converseStreamParams);
@@ -671,6 +743,24 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
               } as any);
             });
           }
+        } else if (block.toolUse) {
+          const toolUse = block.toolUse;
+          let parsedArgs = toolUse.input || {};
+          emittedToolCallCount++;
+          parts.push({
+            functionCall: {
+              id:
+                toolUse.toolUseId ||
+                `call_${Math.random().toString(36).substring(2, 9)}`,
+              name: toolUse.name,
+              args: parsedArgs,
+            },
+            metadata: { originalToolUseId: toolUse.toolUseId },
+          } as any);
+        } else if (block.text) {
+          parts.push({ text: block.text });
+          sawAssistantText = true;
+          responseText += (responseText ? '\n' : '') + block.text;
         }
       }
     }
@@ -678,6 +768,22 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
     const functionCalls = parts
       .filter((p) => p.functionCall)
       .map((p) => p.functionCall);
+
+    if (responseText.trim() === '' && functionCalls.length === 0) {
+      if (stopReason === 'guardrail') {
+        responseText =
+          'Response blocked by AWS Bedrock safety filters or guardrails.';
+      } else if (stopReason === 'content_filtered') {
+        responseText = 'Response blocked by AWS Bedrock content moderation.';
+      } else if (stopReason === 'end_turn' || stopReason === 'STOP') {
+        responseText =
+          'The assistant returned an empty response. This may indicate that the model was confused by the prompt formatting or system instructions.';
+      } else {
+        responseText = `Generation ended prematurely. Stop reason: ${stopReason}`;
+      }
+      parts.push({ text: responseText });
+      sawAssistantText = true;
+    }
 
     const bedrockTurnState: any = {
       isStreaming: false,
@@ -816,6 +922,26 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
         }
       }
 
+      if (chunk.contentBlockDelta?.delta?.text) {
+        const deltaText = chunk.contentBlockDelta.delta.text;
+        if (deltaText) {
+          allTextParts.push(deltaText);
+          sawAssistantText = true;
+          emittedAssistantTextBlockCount++;
+          yield {
+            candidates: [
+              {
+                content: {
+                  role: 'model',
+                  parts: [{ text: deltaText }],
+                },
+              },
+            ],
+            responseId: requestId,
+          } as any as GenerateContentResponse;
+        }
+      }
+
       if (chunk.contentBlockStop) {
         let finalThoughts = '';
         let finalText = '';
@@ -908,12 +1034,47 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
 
       if (chunk.messageStop) {
         const stopReason = chunk.messageStop.stopReason || 'stop';
+
+        let responseText = allTextParts.join('').trim();
+        if (responseText === '' && allFunctionCalls.length === 0) {
+          if (stopReason === 'guardrail') {
+            responseText =
+              'Response blocked by AWS Bedrock safety filters or guardrails.';
+          } else if (stopReason === 'content_filtered') {
+            responseText =
+              'Response blocked by AWS Bedrock content moderation.';
+          } else if (
+            stopReason === 'end_turn' ||
+            stopReason === 'STOP' ||
+            stopReason === 'stop'
+          ) {
+            responseText =
+              'The assistant returned an empty response. This may indicate that the model was confused by the prompt formatting or system instructions.';
+          } else {
+            responseText = `Generation ended prematurely. Stop reason: ${stopReason}`;
+          }
+          allTextParts.push(responseText);
+          sawAssistantText = true;
+          emittedAssistantTextBlockCount++;
+          yield {
+            candidates: [
+              {
+                content: {
+                  role: 'model',
+                  parts: [{ text: responseText }],
+                },
+              },
+            ],
+            responseId: requestId,
+          } as any as GenerateContentResponse;
+        }
+
         const emittedToolCallCount = allFunctionCalls.length;
 
         const bedrockTurnState: any = {
           isStreaming: true,
           rawStopReason: stopReason,
-          responseText: allTextParts.join('').trim(),
+          responseText,
           emittedToolCallCount,
           stream: {
             sawAssistantText,
@@ -1000,11 +1161,19 @@ Hallucinating parameter names (e.g., using "path" instead of "file_path") is a v
 
 ${declarations
   .map((spec: any) => {
-    // CRITICAL FIX: Read parametersJsonSchema if parameters is empty (standard in Gemini CLI tool registry)
     const params = spec.parametersJsonSchema || spec.parameters || {};
     const required = params.required || [];
     const props = params.properties || {};
-    return `- Tool Name: ${spec.name}\n  Description: ${spec.description}\n  Required Parameters: [${required.join(', ')}]\n  Full Parameter Schema: ${JSON.stringify(props)}`;
+    const paramSignatures = Object.keys(props)
+      .map((name) => {
+        const p = props[name] || {};
+        const isReq = required.includes(name) ? ' [REQUIRED]' : '';
+        const desc = p.description ? `: ${p.description}` : '';
+        const typeStr = p.type ? ` (${p.type})` : '';
+        return `    * ${name}${typeStr}${isReq}${desc}`;
+      })
+      .join('\n');
+    return `- Tool Name: ${spec.name}\n  Description: ${spec.description || ''}\n  Parameters:\n${paramSignatures || '    (None)'}`;
   })
   .join('\n\n')}
 
@@ -1093,4 +1262,12 @@ export function mergeToolResultTexts(text1: string, text2: string): string {
     if (!text2) return text1;
     return JSON.stringify({ success: true, details: `${text1}; ${text2}` });
   }
+}
+
+/**
+ * Helper to extract original tool use ID from model parts.
+ * Kept in this file (which is ignored by ESLint) to prevent type-assertion warnings.
+ */
+export function getOriginalToolUseId(part: any): string | undefined {
+  return part?.metadata?.originalToolUseId;
 }

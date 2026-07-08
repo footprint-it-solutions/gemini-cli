@@ -568,4 +568,173 @@ describe('BedrockNovaContentGenerator - Content Generator', () => {
     );
     expect(hasResult3).toBe(true);
   });
+
+  describe('Dynamic Tool Choice, Tool Mapping, and Parser Fallback (Approach A)', () => {
+    it('should allow utility roles to bypass forced schema, map tools, and force single-tool calls', async () => {
+      const mockResponse = {
+        output: {
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                toolUse: {
+                  toolUseId: 'call_classifier_123',
+                  name: 'bedrock_micro_classifier',
+                  input: {
+                    decision: 'stop',
+                    confidence: 'high',
+                    reason: 'Task complete',
+                  },
+                },
+              },
+            ],
+          },
+        },
+        stopReason: 'tool_use',
+      };
+
+      mockClient.send.mockResolvedValue(mockResponse);
+
+      const request: any = {
+        model: 'eu.amazon.nova-micro-v1:0',
+        contents: [{ role: 'user', parts: [{ text: 'Classify turn' }] }],
+        config: {
+          tools: [
+            {
+              functionDeclarations: [
+                {
+                  name: 'bedrock_micro_classifier',
+                  description: 'Classify next speaker',
+                  parameters: {
+                    type: 'object',
+                    properties: { decision: { type: 'string' } },
+                    required: ['decision'],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      };
+
+      // Call generateContent with UTILITY_NEXT_SPEAKER role
+      const response = await generator.generateContent(
+        request,
+        'prompt-id',
+        LlmRole.UTILITY_NEXT_SPEAKER,
+      );
+
+      // Verify that send was called with the mapped tool instead of forced response schema
+      expect(ConverseCommand).toHaveBeenCalled();
+      const lastCallArgs = (ConverseCommand as any).mock.calls[
+        (ConverseCommand as any).mock.calls.length - 1
+      ][0];
+      expect(lastCallArgs.toolConfig.tools[0].toolSpec.name).toBe(
+        'bedrock_micro_classifier',
+      );
+      expect(lastCallArgs.toolConfig.toolChoice.tool.name).toBe(
+        'bedrock_micro_classifier',
+      );
+
+      // Verify that mapResponse parsed the unforced tool call fallback correctly
+      expect(response.functionCalls?.[0]).toEqual({
+        id: 'call_classifier_123',
+        name: 'bedrock_micro_classifier',
+        args: { decision: 'stop', confidence: 'high', reason: 'Task complete' },
+      });
+    });
+
+    it('should gracefully parse raw text blocks as fallback in mapResponse', async () => {
+      const mockResponse = {
+        output: {
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                text: 'Direct text output that bypassed the schema tool.',
+              },
+            ],
+          },
+        },
+        stopReason: 'end_turn',
+      };
+
+      mockClient.send.mockResolvedValue(mockResponse);
+
+      const request: any = {
+        model: 'eu.amazon.nova-2-lite-v1:0',
+        contents: [{ role: 'user', parts: [{ text: 'Generate raw text' }] }],
+      };
+
+      const response = await generator.generateContent(
+        request,
+        'prompt-id',
+        LlmRole.MAIN,
+      );
+
+      expect(response.candidates?.[0].content?.parts?.[0]).toEqual({
+        text: 'Direct text output that bypassed the schema tool.',
+      });
+    });
+
+    it('should stream raw text chunks in mapStreamResponse', async () => {
+      const mockStreamChunks = [
+        {
+          contentBlockDelta: {
+            delta: {
+              text: 'Hello ',
+            },
+          },
+        },
+        {
+          contentBlockDelta: {
+            delta: {
+              text: 'world!',
+            },
+          },
+        },
+        {
+          messageStop: {
+            stopReason: 'end_turn',
+          },
+        },
+      ];
+
+      mockClient.send.mockResolvedValue({
+        stream: (async function* () {
+          for (const chunk of mockStreamChunks) {
+            yield chunk;
+          }
+        })(),
+      });
+
+      const request: any = {
+        model: 'eu.amazon.nova-2-lite-v1:0',
+        contents: [{ role: 'user', parts: [{ text: 'Stream raw' }] }],
+      };
+
+      const stream = await generator.generateContentStream(
+        request,
+        'prompt-id',
+        LlmRole.MAIN,
+      );
+
+      const yieldedResponses = [];
+      for await (const chunk of stream) {
+        yieldedResponses.push(chunk);
+      }
+
+      // We expect 3 chunks: "Hello ", "world!", and the final chunk with metadata
+      expect(yieldedResponses.length).toBe(3);
+      expect(yieldedResponses[0].candidates?.[0].content?.parts?.[0].text).toBe(
+        'Hello ',
+      );
+      expect(yieldedResponses[1].candidates?.[0].content?.parts?.[0].text).toBe(
+        'world!',
+      );
+      expect(
+        (yieldedResponses[2] as any).metadata?.bedrockTurnState?.responseText,
+      ).toBe('Hello world!');
+    });
+  });
 });

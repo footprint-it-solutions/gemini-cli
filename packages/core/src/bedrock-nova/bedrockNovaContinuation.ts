@@ -22,6 +22,7 @@ export interface BedrockNovaContinuationState {
   fallbackContinuationCount: number;
   lastFallbackToolFingerprint?: string;
   lastResponseTextLength?: number;
+  emptyResponseCount?: number;
 }
 
 export type BedrockTurnTextKind =

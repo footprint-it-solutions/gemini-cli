@@ -27,6 +27,7 @@ import {
 import type { Config } from '../config/config.js';
 import { type AgentLoopContext } from '../config/agent-loop-context.js';
 import { getCoreSystemPrompt } from './prompts.js';
+import { getOriginalToolUseId } from './providers/bedrockNovaProvider.js';
 import { checkNextSpeaker } from '../utils/nextSpeakerChecker.js';
 import { reportError } from '../utils/errorReporting.js';
 import { GeminiChat } from './geminiChat.js';
@@ -973,6 +974,58 @@ export class GeminiClient {
       }
     }
 
+    if (
+      this.isBedrockNovaAuth() &&
+      bedrockNovaContinuationState.fallbackContinuationCount > 0
+    ) {
+      const fullHistory = this.getChat().getHistory(/*curated=*/ true);
+      if (fullHistory.length > 3) {
+        const firstMessage = fullHistory[0];
+        const lastTwoMessages = fullHistory.slice(-2);
+
+        const precedingModelContent = lastTwoMessages[1];
+        let precedingBaseId = 'tooluse_synthetic';
+        if (precedingModelContent && precedingModelContent.parts) {
+          for (const p of precedingModelContent.parts) {
+            const originalId = getOriginalToolUseId(p);
+            if (originalId) {
+              precedingBaseId = originalId;
+              break;
+            }
+          }
+        }
+
+        const continuityNudge: Content = {
+          role: 'user',
+          parts: [
+            {
+              text: '[System Continuity Nudge]: You reached the token limit during your previous output. Seamlessly resume generating your previous response from the last line. Do NOT start over, do NOT repeat your intro, and do NOT output any preamble. Wrap your response inside nova_response_schema as normal.',
+            },
+            {
+              functionResponse: {
+                id: precedingBaseId,
+                name: 'nova_response_schema',
+                response: { success: true },
+              },
+            },
+          ],
+        };
+        apiHistoryOverride = [
+          firstMessage,
+          ...lastTwoMessages,
+          continuityNudge,
+        ];
+
+        debugLogger.log(
+          '[GeminiClient] Bedrock Nova context pruned for auto-continuation',
+          JSON.stringify({
+            originalLength: fullHistory.length,
+            prunedLength: apiHistoryOverride.length,
+          }),
+        );
+      }
+    }
+
     const remainingTokenCount =
       tokenLimit(modelForLimitCheck) - this.getChat().getLastPromptTokenCount();
 
@@ -1169,6 +1222,48 @@ export class GeminiClient {
       if (this.isBedrockNovaAuth()) {
         if (!this.config.getQuotaErrorOccurred()) {
           const responseText = turn.getResponseText() || '';
+
+          if (responseText.trim() === '') {
+            const emptyCount =
+              bedrockNovaContinuationState?.emptyResponseCount || 0;
+            if (emptyCount < 1) {
+              debugLogger.warn(
+                '[GeminiClient] Empty response and no tool calls detected for Bedrock Nova. Triggering safety circuit-breaker reprompt.',
+                JSON.stringify({
+                  promptId: prompt_id,
+                  turnId,
+                  emptyCount,
+                }),
+              );
+
+              const repromptRequest = [
+                {
+                  text: 'Your previous response was empty. Please provide your progress update, task status, or next steps now. Wrap your response inside nova_response_schema as normal.',
+                },
+              ];
+
+              turn = yield* this.sendMessageStream(
+                repromptRequest,
+                signal,
+                prompt_id,
+                boundedTurns - 1,
+                displayContent,
+                stopHookActive,
+                {
+                  fallbackContinuationCount:
+                    bedrockNovaContinuationState?.fallbackContinuationCount ||
+                    0,
+                  lastFallbackToolFingerprint:
+                    bedrockNovaContinuationState?.lastFallbackToolFingerprint,
+                  lastResponseTextLength:
+                    bedrockNovaContinuationState?.lastResponseTextLength,
+                  emptyResponseCount: emptyCount + 1,
+                },
+              );
+              return turn;
+            }
+          }
+
           const bedrockTurnState = this.buildBedrockNovaTurnState(
             turn,
             prompt_id,
