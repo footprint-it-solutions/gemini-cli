@@ -130,6 +130,8 @@ Support, release history, and legal information.
   issues and pull requests.
 - **[Local development](./local-development.md):** Setting up a local
   development environment.
+- **[System prompt debugging](./system-prompt-debugging.md):** Extracting and
+  inspecting the compiled system instructions.
 - **[NPM package structure](./npm.md):** The structure of the NPM packages.
 
 ## Releases

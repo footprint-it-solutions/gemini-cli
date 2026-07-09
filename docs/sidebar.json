@@ -224,6 +224,10 @@
             "slug": "docs/issue-and-pr-automation"
           },
           { "label": "Local development", "slug": "docs/local-development" },
+          {
+            "label": "System prompt debugging",
+            "slug": "docs/system-prompt-debugging"
+          },
           { "label": "NPM package structure", "slug": "docs/npm" }
         ]
       }
