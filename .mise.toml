@@ -28,8 +28,8 @@ description = "Builds and bundles the application"
 run = "npm run build:all && npm run bundle"
 
 [tasks.install]
-description = "Builds, bundles, packs and installs the application"
-run = '''npm run build:all && npm run bundle && npm pack && TARBALL=$(node -p 'const p = require("./package.json"); `${p.name.replace("@", "").replace("/", "-")}-${p.version}.tgz`') && npm install -g "$TARBALL" && rm "$TARBALL"'''
+description = "Builds, bundles, and symlinks the application for local execution"
+run = "npm run build:all && npm run bundle && npm link"
 
 [hooks]
 # This runs when you enter the directory or open it in VS Code
