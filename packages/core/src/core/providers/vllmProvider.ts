@@ -258,26 +258,98 @@ export class VllmContentGenerator extends OpenAIContentGenerator {
   }
 
   /**
+   * Injects prompt instructions to compel vLLM models to strictly follow tool parameter schemas,
+   * explicitly warning against using "path" instead of "file_path" to prevent tool execution errors.
+   */
+  private injectParameterSteering(systemInstruction: any): any {
+    const steeringPrompt =
+      'CRITICAL INSTRUCTION: You must strictly adhere to the tool schemas and parameter names. ' +
+      'Specifically, for the tools "write_file", "read_file", and "replace", you MUST use the parameter name "file_path". ' +
+      'Do NOT use "path" as a parameter name, as it is invalid and will cause tool execution to fail.';
+
+    if (!systemInstruction) {
+      return {
+        parts: [{ text: steeringPrompt }],
+      };
+    }
+
+    if (typeof systemInstruction === 'string') {
+      return systemInstruction + '\n\n' + steeringPrompt;
+    }
+
+    if (systemInstruction.parts) {
+      return {
+        ...systemInstruction,
+        parts: [...systemInstruction.parts, { text: '\n\n' + steeringPrompt }],
+      };
+    }
+
+    return systemInstruction;
+  }
+
+  /**
+   * Helper to align parameter names for standard Gemini CLI tool schemas.
+   * Cross-maps path/file_path/dir_path dynamically based on the tool being called.
+   */
+  private alignToolArguments(name: string, args: any): void {
+    if (!args || typeof args !== 'object') return;
+
+    // 1. File-path based tools: read_file, write_file, replace (edit)
+    if (name === 'read_file' || name === 'write_file' || name === 'replace') {
+      if (args.path && !args.file_path) {
+        args.file_path = args.path;
+      }
+      if (args.dir_path && !args.file_path) {
+        args.file_path = args.dir_path;
+      }
+    }
+
+    // 2. Directory-path based tools: list_directory (ls), glob, grep_search
+    if (
+      name === 'list_directory' ||
+      name === 'glob' ||
+      name === 'grep_search' ||
+      name === 'grep_search_ripgrep'
+    ) {
+      if (args.path && !args.dir_path) {
+        args.dir_path = args.path;
+      }
+      if (args.file_path && !args.dir_path) {
+        args.dir_path = args.file_path;
+      }
+    }
+  }
+
+  /**
    * Parses Gemma 4 native inline tool calling token blocks on-the-fly.
    * Example: <|tool_call>call:tool_name{args}<tool_call|>
    */
   private parseInlineToolCall(
     text: string,
   ): { name: string; args: any } | null {
-    // 1. Standardize quotes and escaping tokens: <|" -> " and |> -> "
+    // 1. Standardize quotes and escaping tokens in precise sequence
     let cleaned = text
+      .replace(/<\|">/g, '"')
       .replace(/<\|"/g, '"')
       .replace(/"\|>/g, '"')
+      .replace(/<\|>/g, '')
       .replace(/<\|/g, '')
-      .replace(/\|>/g, '');
+      .replace(/\|>/g, '')
+      .replace(/"\s*>/g, '"'); // Ensure any remaining "> is cleaned up
 
-    // Matches tool_call>call:tool_name{JSON}
+    // Matches tool_call>call:tool_name{JSON} with greedy matching for curly braces
     const match = cleaned.match(
-      /tool_call>?\s*call:([a-zA-Z0-9_\-]+)\s*(\{[\s\S]*?\})/,
+      /tool_call>?\s*call:([a-zA-Z0-9_\-]+)\s*(\{[\s\S]*\})/i,
     );
     if (match) {
       const name = match[1];
       let argsStr = match[2];
+
+      // Strip trailing tool call tags if they got matched inside greedy block
+      const endTagIndex = argsStr.lastIndexOf('}');
+      if (endTagIndex !== -1) {
+        argsStr = argsStr.slice(0, endTagIndex + 1);
+      }
 
       // 2. Quotes unquoted JSON keys on the fly (e.g. {path: "..."} -> {"path": "..."})
       argsStr = argsStr.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
@@ -286,9 +358,7 @@ export class VllmContentGenerator extends OpenAIContentGenerator {
         const args = JSON.parse(argsStr);
 
         // 3. Fallback parameter alignment for Gemini CLI standard tool schemas
-        if (args.path && !args.file_path) {
-          args.file_path = args.path;
-        }
+        this.alignToolArguments(name, args);
 
         return { name, args };
       } catch {
@@ -314,6 +384,10 @@ export class VllmContentGenerator extends OpenAIContentGenerator {
     if (hasTools && !systemInstruction) {
       systemInstruction =
         'You are Gemini CLI, a helpful AI assistant with terminal capabilities.';
+    }
+
+    if (hasTools) {
+      systemInstruction = this.injectParameterSteering(systemInstruction);
     }
 
     const updatedRequest = {
@@ -392,6 +466,18 @@ export class VllmContentGenerator extends OpenAIContentGenerator {
       (this as any).mapResponse(response),
     );
     ProviderLogger.logResponse(this.logFilename, model, baseResponse);
+
+    // Align arguments (e.g. mapping path -> file_path/dir_path) for any native tool calls in the response
+    if (baseResponse.candidates?.[0]?.content?.parts) {
+      for (const part of baseResponse.candidates[0].content.parts) {
+        if (part.functionCall) {
+          this.alignToolArguments(
+            part.functionCall.name,
+            part.functionCall.args,
+          );
+        }
+      }
+    }
 
     // Parse non-streaming inline tool-calls to prevent tag leakage
     const choice = baseResponse.candidates?.[0];
@@ -485,6 +571,10 @@ export class VllmContentGenerator extends OpenAIContentGenerator {
     if (hasTools && !systemInstruction) {
       systemInstruction =
         'You are Gemini CLI, a helpful AI assistant with terminal capabilities.';
+    }
+
+    if (hasTools) {
+      systemInstruction = this.injectParameterSteering(systemInstruction);
     }
 
     const updatedRequest = {
@@ -594,12 +684,15 @@ export class VllmContentGenerator extends OpenAIContentGenerator {
           if (choice?.delta?.tool_calls) {
             for (const tc of choice.delta.tool_calls) {
               if (tc.function) {
+                const args = tc.function.arguments
+                  ? JSON.parse(tc.function.arguments)
+                  : {};
+                const name = tc.function.name || '';
+                this.alignToolArguments(name, args);
                 parts.push({
                   functionCall: {
-                    name: tc.function.name || '',
-                    args: tc.function.arguments
-                      ? JSON.parse(tc.function.arguments)
-                      : {},
+                    name,
+                    args,
                   },
                 });
               }
