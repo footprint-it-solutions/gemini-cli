@@ -240,4 +240,178 @@ describe('VllmContentGenerator', () => {
       { text: 'Result is 4.' },
     ]);
   });
+
+  it('should inject parameter steering instructions into the system prompt when tools are active', async () => {
+    const localCreateSpy = vi.spyOn(
+      (generator as any).localClient.chat.completions,
+      'create',
+    );
+
+    await generator.generateContent(
+      {
+        model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized',
+        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        config: {
+          tools: [{ functionDeclarations: [{ name: 'write_file' }] }],
+          systemInstruction: 'You are a coder helper.',
+        },
+      },
+      'prompt-id',
+      LlmRole.MAIN,
+    );
+
+    expect(localCreateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({
+            role: 'system',
+            content: expect.stringContaining(
+              'CRITICAL INSTRUCTION: You must strictly adhere to the tool schemas and parameter names.',
+            ),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it('should align path to file_path in non-streaming native tool calls', async () => {
+    vi.spyOn(
+      (generator as any).localClient.chat.completions,
+      'create',
+    ).mockResolvedValue({
+      id: 'mock-id',
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            tool_calls: [
+              {
+                id: 'call_1',
+                type: 'function',
+                function: {
+                  name: 'write_file',
+                  arguments: JSON.stringify({
+                    path: 'test.txt',
+                    content: 'hello',
+                  }),
+                },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+    } as any);
+
+    const result = await generator.generateContent(
+      {
+        model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized',
+        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        config: {
+          tools: [{ functionDeclarations: [{ name: 'write_file' }] }],
+        },
+      },
+      'prompt-id',
+      LlmRole.MAIN,
+    );
+
+    const part = result.candidates?.[0]?.content?.parts?.[0];
+    expect(part?.functionCall).toBeDefined();
+    expect(part?.functionCall?.name).toBe('write_file');
+    expect(part?.functionCall?.args).toEqual({
+      path: 'test.txt',
+      file_path: 'test.txt',
+      content: 'hello',
+    });
+  });
+
+  it('should align path to file_path in streaming native tool calls', async () => {
+    const mockChunks = [
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  id: 'call_1',
+                  type: 'function',
+                  function: {
+                    name: 'write_file',
+                    arguments: JSON.stringify({
+                      path: 'test.txt',
+                      content: 'hello',
+                    }),
+                  },
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      },
+    ];
+
+    const mockStream = {
+      [Symbol.asyncIterator]: async function* () {
+        for (const chunk of mockChunks) {
+          yield chunk;
+        }
+      },
+    };
+
+    vi.spyOn(
+      (generator as any).localClient.chat.completions,
+      'create',
+    ).mockResolvedValue(mockStream as any);
+
+    const stream = await generator.generateContentStream(
+      {
+        model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized',
+        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        config: {
+          tools: [{ functionDeclarations: [{ name: 'write_file' }] }],
+        },
+      },
+      'prompt-id',
+      LlmRole.MAIN,
+    );
+
+    const parts: any[] = [];
+    for await (const chunk of stream) {
+      const part = chunk.candidates?.[0]?.content?.parts?.[0];
+      if (part) {
+        parts.push(part);
+      }
+    }
+
+    expect(parts.length).toBe(1);
+    expect(parts[0].functionCall).toBeDefined();
+    expect(parts[0].functionCall.name).toBe('write_file');
+    expect(parts[0].functionCall.args).toEqual({
+      path: 'test.txt',
+      file_path: 'test.txt',
+      content: 'hello',
+    });
+  });
+
+  it('should parse inline tool calls with nested curly braces and clean trailing characters', () => {
+    const rawInlineText = `tool_call>call:write_file{file_path:<|"demo_file.ts<|>",content:<|"export const fn = () => { console.log('ok'); };<|>"}<tool_call|>`;
+    const parsed = (generator as any).parseInlineToolCall(rawInlineText);
+    expect(parsed).toBeDefined();
+    expect(parsed?.name).toBe('write_file');
+    expect(parsed?.args).toEqual({
+      file_path: 'demo_file.ts',
+      content: "export const fn = () => { console.log('ok'); };",
+    });
+  });
+
+  it('should align parameters for directory-based tools in alignToolArguments', () => {
+    const mockArgs = { path: 'src/folder', file_path: 'src/folder' };
+    (generator as any).alignToolArguments('list_directory', mockArgs);
+    expect(mockArgs).toEqual({
+      path: 'src/folder',
+      file_path: 'src/folder',
+      dir_path: 'src/folder',
+    });
+  });
 });
