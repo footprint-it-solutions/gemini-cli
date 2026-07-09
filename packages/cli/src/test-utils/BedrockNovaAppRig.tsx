@@ -27,11 +27,14 @@ export class BedrockNovaAppRig extends AppRig {
   }
 
   override async initialize() {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const rootDir = process.cwd();
+
     // 1. Pre-stub AWS environment and credentials to satisfy environment checks
     vi.stubEnv(
       'AWS_CONFIG_FILE',
-      process.env['AWS_CONFIG_FILE'] ||
-        '/home/andrew/repos/footprint-it-solutions/project-aerith/gemini-cli-custom/.aws/config',
+      process.env['AWS_CONFIG_FILE'] || path.resolve(rootDir, '.aws/config'),
     );
     vi.stubEnv(
       'AWS_PROFILE',
@@ -47,10 +50,6 @@ export class BedrockNovaAppRig extends AppRig {
     await super.initialize();
 
     // 2b. Automatically copy host MCP settings into the test instance to enable MCP integration (like AWS Docs)
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const rootDir =
-      '/home/andrew/repos/footprint-it-solutions/project-aerith/gemini-cli-custom';
     const hostSettingsPath = path.join(rootDir, '.gemini', 'settings.json');
 
     if (fs.existsSync(hostSettingsPath)) {

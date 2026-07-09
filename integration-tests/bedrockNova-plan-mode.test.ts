@@ -14,10 +14,7 @@ describe('Bedrock Plan Mode', () => {
 
   beforeEach(() => {
     rig = new TestRig();
-    vi.stubEnv(
-      'AWS_CONFIG_FILE',
-      '/home/andrew/repos/footprint-it-solutions/project-aerith/gemini-cli-custom/.aws/config',
-    );
+    vi.stubEnv('AWS_CONFIG_FILE', join(process.cwd(), '.aws/config'));
     vi.stubEnv('AWS_PROFILE', 'Aerith-Development');
     vi.stubEnv('AWS_SDK_LOAD_CONFIG', '1');
   });

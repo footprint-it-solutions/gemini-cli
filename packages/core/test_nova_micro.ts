@@ -5,10 +5,10 @@
  */
 
 import { BedrockNovaContentGenerator } from './src/core/providers/bedrockNovaProvider.js';
+import * as path from 'node:path';
 
 async function run() {
-  process.env.AWS_CONFIG_FILE =
-    '/home/andrew/repos/footprint-it-solutions/project-aerith/gemini-cli-custom/.aws/config';
+  process.env.AWS_CONFIG_FILE = path.resolve(process.cwd(), '.aws/config');
   process.env.AWS_PROFILE = 'Aerith-Development';
   process.env.AWS_SDK_LOAD_CONFIG = '1';
 
