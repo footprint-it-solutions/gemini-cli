@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { OllamaAppRig } from '../packages/cli/src/test-utils/OllamaAppRig.js';
+import { VllmAppRig } from '../packages/cli/src/test-utils/VllmAppRig.js';
 import {
   type EvalPolicy,
   runEval,
@@ -17,26 +17,25 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 
-export interface OllamaAppEvalCase extends BaseEvalCase {
+export interface VllmAppEvalCase extends BaseEvalCase {
+  suiteName: string;
+  suiteType: 'behavioral' | 'component-level' | 'hero-scenario';
   configOverrides?: Record<string, any>;
   prompt: string;
-  setup?: (rig: OllamaAppRig) => Promise<void>;
-  assert: (rig: OllamaAppRig, output: string) => Promise<void>;
+  setup?: (rig: VllmAppRig) => Promise<void>;
+  assert: (rig: VllmAppRig, output: string) => Promise<void>;
 }
 
 /**
- * A dedicated helper for running local Ollama provider behavioral evaluations using the in-process OllamaAppRig.
- * This ensures no mock or test pollution on Gemini-specific AppRig systems.
+ * A dedicated helper for running local vLLM provider behavioral evaluations using the in-process VllmAppRig.
+ * This ensures no mock or test pollution on Gemini/Ollama-specific AppRig systems.
  */
-export function ollamaEvalTest(
-  policy: EvalPolicy,
-  evalCase: OllamaAppEvalCase,
-) {
+export function vllmEvalTest(policy: EvalPolicy, evalCase: VllmAppEvalCase) {
   const fn = async () => {
     await withEvalRetries(evalCase.name, async () => {
-      const rig = new OllamaAppRig({
+      const rig = new VllmAppRig({
         configOverrides: {
-          model: 'ollama/qwen3-coder:30b', // Default local model
+          model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized', // Default local model
           ...evalCase.configOverrides,
         },
       });

@@ -15,6 +15,8 @@ import {
 } from '@google/genai';
 import { HttpProxyAgent } from 'http-proxy-agent';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as os from 'node:os';
 import { createCodeAssistContentGenerator } from '../code_assist/codeAssist.js';
 import { isCloudShell } from '../ide/detect-ide.js';
@@ -34,8 +36,7 @@ import { ModelMappingContentGenerator } from './modelMappingContentGenerator.js'
 import { CCPA_AI_MODEL_MAPPINGS } from '../config/models.js';
 import { OpenAIContentGenerator } from './providers/openAiProvider.js';
 import { BedrockNovaContentGenerator } from './providers/bedrockNovaProvider.js';
-import { OllamaContentGenerator } from './providers/ollamaProvider.js';
-import { OllamaStreamingContentGenerator } from './providers/ollamaStreamingProvider.js';
+import { VllmContentGenerator } from './providers/vllmProvider.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -75,8 +76,62 @@ export enum AuthType {
   OPENAI = 'openai',
   BEDROCK = 'bedrock',
   BEDROCK_NOVA = 'bedrock-nova',
-  OLLAMA = 'ollama',
-  OLLAMA_STREAMING = 'ollama-streaming',
+  VLLM = 'vllm',
+}
+
+interface EarlyBootSettings {
+  modelConfigs?: {
+    customAliases?: Record<
+      string,
+      {
+        modelConfig?: {
+          model?: string;
+        };
+      }
+    >;
+  };
+}
+
+function resolveModelAliasAuthType(model: string): AuthType | undefined {
+  if (!model) return undefined;
+
+  try {
+    const cwd = process.cwd();
+    const projectSettingsPath = path.join(cwd, '.gemini', 'settings.json');
+    const userHome = os.homedir();
+    const userSettingsPath = path.join(userHome, '.gemini', 'settings.json');
+
+    const settingsPaths = [projectSettingsPath, userSettingsPath];
+
+    for (const settingsPath of settingsPaths) {
+      if (fs.existsSync(settingsPath)) {
+        const content = fs.readFileSync(settingsPath, 'utf8');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        const json = JSON.parse(content) as unknown as EarlyBootSettings;
+        const aliases = json.modelConfigs?.customAliases || {};
+
+        if (aliases[model]?.modelConfig?.model) {
+          const concreteModel = aliases[model].modelConfig.model;
+          if (concreteModel && concreteModel.startsWith('vllm/')) {
+            return AuthType.VLLM;
+          }
+          if (concreteModel && concreteModel.startsWith('bedrock-nova/')) {
+            return AuthType.BEDROCK_NOVA;
+          }
+          if (concreteModel && concreteModel.startsWith('bedrock/')) {
+            return AuthType.BEDROCK;
+          }
+          if (concreteModel && concreteModel.startsWith('openai/')) {
+            return AuthType.OPENAI;
+          }
+        }
+      }
+    }
+  } catch {
+    // Suppress filesystem loading errors during early boot shim
+  }
+
+  return undefined;
 }
 
 /**
@@ -91,7 +146,21 @@ export enum AuthType {
  * 6. GEMINI_API_KEY -> USE_GEMINI
  */
 export function getAuthTypeFromEnv(modelName?: string): AuthType | undefined {
-  const model = modelName || process.env['GEMINI_MODEL'];
+  let model = modelName || process.env['GEMINI_MODEL'];
+
+  if (model) {
+    try {
+      model = resolveModel(model);
+    } catch {
+      // Suppress resolution errors during early boot
+    }
+
+    const resolvedAuth = resolveModelAliasAuthType(model);
+    if (resolvedAuth) {
+      return resolvedAuth;
+    }
+  }
+
   if (model?.startsWith('bedrock-nova/')) {
     return AuthType.BEDROCK_NOVA;
   }
@@ -101,11 +170,8 @@ export function getAuthTypeFromEnv(modelName?: string): AuthType | undefined {
   if (model?.startsWith('openai/')) {
     return AuthType.OPENAI;
   }
-  if (model?.startsWith('ollama-stream/')) {
-    return AuthType.OLLAMA_STREAMING;
-  }
-  if (model?.startsWith('ollama/')) {
-    return AuthType.OLLAMA;
+  if (model?.startsWith('vllm/')) {
+    return AuthType.VLLM;
   }
   if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {
     return AuthType.LOGIN_WITH_GOOGLE;
@@ -116,8 +182,8 @@ export function getAuthTypeFromEnv(modelName?: string): AuthType | undefined {
   if (process.env['OPENAI_API_KEY']) {
     return AuthType.OPENAI;
   }
-  if (process.env['OLLAMA_BASE_URL']) {
-    return AuthType.OLLAMA;
+  if (process.env['VLLM_BASE_URL']) {
+    return AuthType.VLLM;
   }
   if (
     process.env['AWS_ACCESS_KEY_ID'] ||
@@ -234,8 +300,10 @@ export async function createContentGeneratorConfig(
     return contentGeneratorConfig;
   }
 
-  if (authType === AuthType.OLLAMA || authType === AuthType.OLLAMA_STREAMING) {
-    contentGeneratorConfig.baseUrl = process.env['OLLAMA_BASE_URL'] || baseUrl;
+  if (authType === AuthType.VLLM) {
+    contentGeneratorConfig.baseUrl = process.env['VLLM_BASE_URL'] || baseUrl;
+    contentGeneratorConfig.apiKey =
+      process.env['VLLM_API_KEY'] || apiKey || 'vllm-dummy-key';
     return contentGeneratorConfig;
   }
 
@@ -399,16 +467,9 @@ export async function createContentGenerator(
       );
     }
 
-    if (config.authType === AuthType.OLLAMA) {
+    if (config.authType === AuthType.VLLM) {
       return new LoggingContentGenerator(
-        new OllamaContentGenerator({ baseUrl: config.baseUrl }),
-        gcConfig,
-      );
-    }
-
-    if (config.authType === AuthType.OLLAMA_STREAMING) {
-      return new LoggingContentGenerator(
-        new OllamaStreamingContentGenerator({ baseUrl: config.baseUrl }),
+        new VllmContentGenerator(config.apiKey || '', config.baseUrl),
         gcConfig,
       );
     }

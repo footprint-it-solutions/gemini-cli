@@ -25,10 +25,8 @@ export async function validateAuthMethodWithSettings(
     methodStr === 'compute-default-credentials' ||
     authMethod === AuthType.GATEWAY ||
     methodStr === 'gateway' ||
-    authMethod === AuthType.OLLAMA ||
-    methodStr === 'ollama' ||
-    authMethod === AuthType.OLLAMA_STREAMING ||
-    methodStr === 'ollama-streaming'
+    authMethod === AuthType.VLLM ||
+    methodStr === 'vllm'
   ) {
     return null;
   }

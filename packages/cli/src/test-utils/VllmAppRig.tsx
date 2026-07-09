@@ -108,11 +108,11 @@ rl.on('line', (line) => {
 `;
 
 /**
- * A dedicated test rig for simulating interactive user sessions using local Ollama models.
+ * A dedicated test rig for simulating interactive user sessions using local or remote vLLM models.
  * This class inherits all React-Ink TUI rendering and message-passing loops from AppRig,
- * but overrides the environment and authentication layers to target Ollama instead of Gemini.
+ * but overrides the environment and authentication layers to target vLLM instead of Gemini.
  */
-export class OllamaAppRig extends AppRig {
+export class VllmAppRig extends AppRig {
   override async initialize() {
     // 1. Pre-stub GEMINI_API_KEY to satisfy the parent class environment check
     vi.stubEnv(
@@ -127,9 +127,9 @@ export class OllamaAppRig extends AppRig {
     const mcpScriptPath = path.join(this.getTestDir(), 'mock-mcp.cjs');
     fs.writeFileSync(mcpScriptPath, mockMcpScript, { mode: 0o755 });
 
-    // 4. Re-stub default auth to OLLAMA, configure custom MCP servers & planning settings,
+    // 4. Re-stub default auth to VLLM, configure custom MCP servers & planning settings,
     // and refresh the authentication context
-    vi.stubEnv('GEMINI_DEFAULT_AUTH_TYPE', AuthType.OLLAMA);
+    vi.stubEnv('GEMINI_DEFAULT_AUTH_TYPE', AuthType.VLLM);
 
     const plansDir = path.join(this.getTestDir(), 'plans');
     if (!fs.existsSync(plansDir)) {
@@ -139,7 +139,7 @@ export class OllamaAppRig extends AppRig {
     const mergedSettings = {
       security: {
         auth: {
-          selectedType: AuthType.OLLAMA,
+          selectedType: AuthType.VLLM,
           useExternal: true,
         },
         folderTrust: {
@@ -176,7 +176,7 @@ export class OllamaAppRig extends AppRig {
 
     await act(async () => {
       const authType =
-        getAuthTypeFromEnv(this.getConfig().getModel()) || AuthType.OLLAMA;
+        getAuthTypeFromEnv(this.getConfig().getModel()) || AuthType.VLLM;
       await this.getConfig().refreshAuth(authType);
     });
   }

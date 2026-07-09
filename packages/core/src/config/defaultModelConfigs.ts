@@ -55,14 +55,6 @@ export const AMAZON_NOVA_LITE = 'eu.amazon.nova-2-lite-v1:0';
 export const AMAZON_NOVA_MICRO = 'eu.amazon.nova-micro-v1:0';
 
 /**
- * Model aliases for Ollama models.
- */
-export const OLLAMA_LLAMA3 = 'llama3.1';
-export const OLLAMA_MISTRAL = 'mistral';
-export const OLLAMA_PHI3 = 'phi3';
-export const OLLAMA_LLAMA3_1 = 'llama3.1';
-
-/**
  * Model configuration registry.
  */
 export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
@@ -431,11 +423,20 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
       },
     },
 
-    // Ollama
-    llama3: { modelConfig: { model: 'ollama/' + OLLAMA_LLAMA3 } },
-    mistral: { modelConfig: { model: 'ollama/' + OLLAMA_MISTRAL } },
-    phi3: { modelConfig: { model: 'ollama/' + OLLAMA_PHI3 } },
-    'llama3.1': { modelConfig: { model: 'ollama/' + OLLAMA_LLAMA3_1 } },
+    // vLLM
+    'gemma4-12b': {
+      modelConfig: { model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized' },
+    },
+    'gemma4-26b': {
+      modelConfig: {
+        model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized-remote',
+      },
+    },
+    'gemma4-12b-remote': {
+      modelConfig: {
+        model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized-remote',
+      },
+    },
   },
   modelDefinitions: {
     // Concrete Models

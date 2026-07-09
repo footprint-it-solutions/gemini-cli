@@ -41,6 +41,7 @@ export interface BedrockNovaProviderTurnStateMetadata {
   rawStopReason: string | null;
   responseText: string;
   emittedToolCallCount: number;
+  totalBytesReceived?: number;
   stream: {
     sawAssistantText: boolean;
     sawContentBlockStop: boolean;

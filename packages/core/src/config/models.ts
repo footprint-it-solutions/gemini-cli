@@ -192,6 +192,24 @@ export function resolveModel(
     return resolved;
   }
 
+  const envModel = process.env['GEMINI_MODEL'];
+  const isVllmActive =
+    (envModel &&
+      (envModel.startsWith('vllm/') ||
+        envModel === 'gemma4-12b' ||
+        envModel === 'gemma4-26b' ||
+        envModel === 'gemma4-12b-remote')) ||
+    process.env['VLLM_BASE_URL'];
+
+  if (isVllmActive) {
+    if (normalizedModel === 'flash' || normalizedModel === 'auto') {
+      return 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized';
+    }
+    if (normalizedModel === 'pro') {
+      return 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized';
+    }
+  }
+
   let resolved: string;
   switch (normalizedModel) {
     case GEMINI_MODEL_ALIAS_AUTO:
@@ -240,6 +258,18 @@ export function resolveModel(
     case 'nova-micro':
     case 'bedrock/nova-micro': {
       resolved = 'bedrock/eu.amazon.nova-micro-v1:0';
+      break;
+    }
+    case 'gemma4-12b': {
+      resolved = 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized';
+      break;
+    }
+    case 'gemma4-12b-remote': {
+      resolved = 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized-remote';
+      break;
+    }
+    case 'gemma4-26b': {
+      resolved = 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized-remote';
       break;
     }
     default: {

@@ -111,11 +111,7 @@ export function resolveCompressionModelConfigAlias(
   if (authType === AuthType.BEDROCK) {
     return 'bedrock-chat-compression';
   }
-  if (
-    authType === AuthType.OLLAMA ||
-    authType === AuthType.OLLAMA_STREAMING ||
-    authType === AuthType.OPENAI
-  ) {
+  if (authType === AuthType.VLLM || authType === AuthType.OPENAI) {
     return model;
   }
 
@@ -369,7 +365,25 @@ export class ChatCompressionService {
         ? originalHistoryToCompress
         : historyToCompressTruncated;
 
-    const hasPreviousSnapshot = historyForSummarizer.some((c) =>
+    // Ensure the summarizer input leaves at least 8,192 tokens for output generation.
+    // This self-healing block prevents vLLM 400 errors when the active history is completely full.
+    const maxSummarizerInputLimit = Math.max(32768, tokenLimit(model) - 8192);
+    const summarizerHistory = [...historyForSummarizer];
+    let summarizerTokenCount = estimateTokenCountSync(
+      summarizerHistory.flatMap((c) => c.parts || []),
+    );
+
+    while (
+      summarizerHistory.length > 1 &&
+      summarizerTokenCount > maxSummarizerInputLimit
+    ) {
+      summarizerHistory.shift(); // FIFO remove oldest turns
+      summarizerTokenCount = estimateTokenCountSync(
+        summarizerHistory.flatMap((c) => c.parts || []),
+      );
+    }
+
+    const hasPreviousSnapshot = summarizerHistory.some((c) =>
       c.parts?.some((p) => p.text?.includes('<state_snapshot>')),
     );
     const compressionModelConfigKey = {
@@ -386,7 +400,7 @@ export class ChatCompressionService {
     const summaryResponse = await config.getBaseLlmClient().generateContent({
       modelConfigKey: compressionModelConfigKey,
       contents: [
-        ...historyForSummarizer,
+        ...summarizerHistory,
         {
           role: 'user',
           parts: [

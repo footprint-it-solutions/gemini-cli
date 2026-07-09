@@ -737,4 +737,148 @@ describe('BedrockNovaContentGenerator - Content Generator', () => {
       ).toBe('Hello world!');
     });
   });
+
+  describe('Unhappy Path Diagnostic Mitigations', () => {
+    it('should diagnose empty stream blocked by AWS Bedrock Guardrails', async () => {
+      const mockStream = (async function* () {
+        yield { messageStop: { stopReason: 'guardrail' } };
+      })();
+      mockClient.send.mockResolvedValue({ stream: mockStream });
+
+      const stream = await generator.generateContentStream(
+        {
+          model: 'eu.amazon.nova-2-lite-v1:0',
+          contents: [{ role: 'user', parts: [{ text: 'Prompt' }] }],
+        },
+        'prompt-id',
+        LlmRole.MAIN,
+      );
+
+      const chunks = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      expect(chunks[0].candidates?.[0].content?.parts?.[0].text).toBe(
+        'Response blocked by AWS Bedrock safety filters or guardrails.',
+      );
+      expect((chunks[1] as any).metadata?.bedrockTurnState?.responseText).toBe(
+        'Response blocked by AWS Bedrock safety filters or guardrails.',
+      );
+    });
+
+    it('should diagnose empty stream blocked by Content Moderation Filter', async () => {
+      const mockStream = (async function* () {
+        yield { messageStop: { stopReason: 'content_filtered' } };
+      })();
+      mockClient.send.mockResolvedValue({ stream: mockStream });
+
+      const stream = await generator.generateContentStream(
+        {
+          model: 'eu.amazon.nova-2-lite-v1:0',
+          contents: [{ role: 'user', parts: [{ text: 'Prompt' }] }],
+        },
+        'prompt-id',
+        LlmRole.MAIN,
+      );
+
+      const chunks = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      expect(chunks[0].candidates?.[0].content?.parts?.[0].text).toBe(
+        'Response blocked by AWS Bedrock content moderation.',
+      );
+    });
+
+    it('should diagnose empty stream with stopReason end_turn (model confusion)', async () => {
+      const mockStream = (async function* () {
+        yield { messageStop: { stopReason: 'end_turn' } };
+      })();
+      mockClient.send.mockResolvedValue({ stream: mockStream });
+
+      const stream = await generator.generateContentStream(
+        {
+          model: 'eu.amazon.nova-2-lite-v1:0',
+          contents: [{ role: 'user', parts: [{ text: 'Prompt' }] }],
+        },
+        'prompt-id',
+        LlmRole.MAIN,
+      );
+
+      const chunks = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      expect(chunks[0].candidates?.[0].content?.parts?.[0].text).toContain(
+        'The assistant returned an empty response. This may indicate',
+      );
+    });
+
+    it('should diagnose empty stream that terminates prematurely with custom reason', async () => {
+      const mockStream = (async function* () {
+        yield { messageStop: { stopReason: 'timeout' } };
+      })();
+      mockClient.send.mockResolvedValue({ stream: mockStream });
+
+      const stream = await generator.generateContentStream(
+        {
+          model: 'eu.amazon.nova-2-lite-v1:0',
+          contents: [{ role: 'user', parts: [{ text: 'Prompt' }] }],
+        },
+        'prompt-id',
+        LlmRole.MAIN,
+      );
+
+      const chunks = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      expect(chunks[0].candidates?.[0].content?.parts?.[0].text).toBe(
+        'Generation ended prematurely. Stop reason: timeout',
+      );
+    });
+
+    it('should gracefully recover and parse text even if the model outputs malformed schema JSON', async () => {
+      const mockStream = (async function* () {
+        yield {
+          contentBlockStart: {
+            start: {
+              toolUse: { toolUseId: 'call_xxx', name: 'nova_response_schema' },
+            },
+          },
+        };
+        yield {
+          contentBlockDelta: {
+            delta: {
+              toolUse: {
+                input:
+                  '{"thoughts": "thinking", "text": "Successfully parsed even if malformed!"',
+              },
+            },
+          },
+        };
+        yield { contentBlockStop: {} };
+        yield { messageStop: { stopReason: 'end_turn' } };
+      })();
+      mockClient.send.mockResolvedValue({ stream: mockStream });
+
+      const stream = await generator.generateContentStream(
+        {
+          model: 'eu.amazon.nova-2-lite-v1:0',
+          contents: [{ role: 'user', parts: [{ text: 'Prompt' }] }],
+        },
+        'prompt-id',
+        LlmRole.MAIN,
+      );
+
+      const chunks = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      const lastChunk = chunks[chunks.length - 1];
+      expect(
+        (lastChunk as any).metadata?.bedrockTurnState?.responseText,
+      ).toContain('Successfully parsed even if malformed!');
+    });
+  });
 });

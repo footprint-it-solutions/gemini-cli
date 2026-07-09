@@ -830,6 +830,12 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
     stream: any,
     requestId?: string,
   ): AsyncGenerator<GenerateContentResponse> {
+    ProviderLogger.log(
+      this.logFilename,
+      'INFO',
+      `[BedrockNova] Stream generator initiated. requestId=${requestId || 'unknown'}`,
+    );
+    let totalBytesReceived = 0;
     let currentBlockJson = '';
     let lastYieldedThoughts = '';
     let lastYieldedText = '';
@@ -845,10 +851,25 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
     const allFunctionCalls: any[] = [];
 
     for await (const chunk of stream) {
+      if (chunk) {
+        try {
+          const chunkStr = JSON.stringify(chunk);
+          totalBytesReceived += Buffer.byteLength(chunkStr, 'utf8');
+        } catch {
+          totalBytesReceived += 50; // Fallback
+        }
+      }
+
       if (chunk.contentBlockStart?.start?.toolUse) {
         currentToolUseId =
           chunk.contentBlockStart.start.toolUse.toolUseId || '';
         currentBlockJson = '';
+        const toolName = chunk.contentBlockStart.start.toolUse.name || '';
+        ProviderLogger.log(
+          this.logFilename,
+          'INFO',
+          `[BedrockNova] Content Block Start: name=${toolName}, id=${currentToolUseId}`,
+        );
         if (
           chunk.contentBlockStart.start.toolUse.name === 'nova_response_schema'
         ) {
@@ -947,6 +968,12 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
         let finalText = '';
         let finalToolCalls: any[] = [];
 
+        ProviderLogger.log(
+          this.logFilename,
+          'INFO',
+          `[BedrockNova] Content Block Stop. Parsing accumulated JSON length: ${currentBlockJson.length}`,
+        );
+
         try {
           const parsedFinal = JSON.parse(currentBlockJson || '{}');
           finalThoughts = parsedFinal.thoughts || '';
@@ -955,7 +982,12 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
           // CRITICAL FIX: Strictly validate that tool_calls is an array
           const rawToolCalls = parsedFinal.tool_calls;
           finalToolCalls = Array.isArray(rawToolCalls) ? rawToolCalls : [];
-        } catch {
+        } catch (error: any) {
+          ProviderLogger.log(
+            this.logFilename,
+            'ERROR',
+            `[BedrockNova] JSON parse failed on schema output. Falling back to regex parser. Error: ${error?.message || 'unknown'}`,
+          );
           const parsedPartial = parsePartialResponse(currentBlockJson);
           finalThoughts = parsedPartial.thoughts;
           finalText = parsedPartial.text;
@@ -1037,6 +1069,11 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
 
         let responseText = allTextParts.join('').trim();
         if (responseText === '' && allFunctionCalls.length === 0) {
+          ProviderLogger.log(
+            this.logFilename,
+            'INFO',
+            `[BedrockNova] Empty completion detected. Injecting honest diagnostics. Stop reason: ${stopReason}`,
+          );
           if (stopReason === 'guardrail') {
             responseText =
               'Response blocked by AWS Bedrock safety filters or guardrails.';
@@ -1069,6 +1106,12 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
           } as any as GenerateContentResponse;
         }
 
+        ProviderLogger.log(
+          this.logFilename,
+          'INFO',
+          `[BedrockNova] Stream completed. Total raw-object bytes received from Bedrock stream: ${totalBytesReceived} bytes.`,
+        );
+
         const emittedToolCallCount = allFunctionCalls.length;
 
         const bedrockTurnState: any = {
@@ -1076,6 +1119,7 @@ export class BedrockNovaContentGenerator implements ContentGenerator {
           rawStopReason: stopReason,
           responseText,
           emittedToolCallCount,
+          totalBytesReceived,
           stream: {
             sawAssistantText,
             sawContentBlockStop: true,

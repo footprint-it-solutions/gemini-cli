@@ -26,6 +26,17 @@ describe('tokenLimit', () => {
     expect(tokenLimit(PREVIEW_GEMINI_FLASH_MODEL)).toBe(1_048_576);
   });
 
+  it('should return the correct token limit for gemma 4 local and remote vllm models', () => {
+    expect(tokenLimit('gemma4-12b')).toBe(32_768);
+    expect(tokenLimit('vllm/google/gemma-4-12B-it-qat-q4_0-unquantized')).toBe(
+      32_768,
+    );
+    expect(tokenLimit('gemma4-12b-remote')).toBe(98_304);
+    expect(
+      tokenLimit('vllm/google/gemma-4-12B-it-qat-q4_0-unquantized-remote'),
+    ).toBe(98_304);
+  });
+
   it('should return the default token limit for an unknown model', () => {
     expect(tokenLimit('unknown-model')).toBe(DEFAULT_TOKEN_LIMIT);
   });

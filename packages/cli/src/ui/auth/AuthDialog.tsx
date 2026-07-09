@@ -53,9 +53,9 @@ export function AuthDialog({
       value: AuthType.BEDROCK,
     },
     {
-      key: 'ollama',
-      label: 'Ollama (Local)',
-      value: AuthType.OLLAMA,
+      key: 'vllm',
+      label: 'vLLM (Local/Remote)',
+      value: AuthType.VLLM,
     },
     {
       key: 'gateway',

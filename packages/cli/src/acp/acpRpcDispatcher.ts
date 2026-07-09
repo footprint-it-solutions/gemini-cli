@@ -81,9 +81,9 @@ export class GeminiAgent {
         description: 'Use Amazon Bedrock with AWS credentials',
       },
       {
-        id: AuthType.OLLAMA,
-        name: 'Ollama',
-        description: 'Use a local Ollama instance',
+        id: AuthType.VLLM,
+        name: 'vLLM',
+        description: 'Use a local or remote vLLM instance',
       },
       {
         id: AuthType.GATEWAY,
