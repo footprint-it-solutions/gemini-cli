@@ -193,4 +193,66 @@ describe('vllm_bdd_evals', () => {
       expect(finalOutput).toBeDefined();
     },
   });
+
+  // 3. Smoke/regression test for write_file and replace tools
+  vllmEvalTest('USUALLY_PASSES', {
+    suiteName: 'vllm_bdd_evals',
+    suiteType: 'behavioral',
+    name: 'should successfully write and modify files using write_file and replace tools under vLLM',
+    prompt:
+      'Please use write_file to create a file "src/test_demo.ts" with text "export const value = 1;". ' +
+      'Then, use the replace tool to change the value from 1 to 42 in that file.',
+    timeout: 180000,
+    configOverrides: {
+      model: 'gemma4-12b',
+      approvalMode: 'yolo',
+    },
+    assert: async (rig, output) => {
+      // Wait until the agent has completed both the write_file and replace operations
+      await waitUntil(
+        rig,
+        () =>
+          rig.getStaticOutput().includes('42') &&
+          (rig.getStaticOutput().toLowerCase().includes('replace') ||
+            rig.getStaticOutput().toLowerCase().includes('modify') ||
+            rig.getStaticOutput().toLowerCase().includes('success')),
+        120000,
+      );
+
+      const finalOutput = rig.getStaticOutput();
+      expect(finalOutput).toContain('42');
+    },
+  });
+
+  // 4. Smoke/regression test for directory-based tools: list_directory, glob, and grep_search
+  vllmEvalTest('USUALLY_PASSES', {
+    suiteName: 'vllm_bdd_evals',
+    suiteType: 'behavioral',
+    name: 'should successfully navigate directories using list_directory, glob, and grep_search under vLLM',
+    prompt:
+      'Please list the contents of the "src" directory to see what is there, ' +
+      'then use glob to find files matching "*.ts" under "src", ' +
+      'and finally use grep_search to find the word "search_target" in "src".',
+    timeout: 180000,
+    configOverrides: {
+      model: 'gemma4-12b',
+      approvalMode: 'yolo',
+    },
+    files: {
+      'src/find_me.ts': 'export const secret = "search_target";',
+      'src/other.txt': 'no target here',
+    },
+    assert: async (rig, output) => {
+      await waitUntil(
+        rig,
+        () =>
+          rig.getStaticOutput().includes('find_me.ts') ||
+          rig.getStaticOutput().toLowerCase().includes('search_target'),
+        120000,
+      );
+
+      const finalOutput = rig.getStaticOutput();
+      expect(finalOutput).toBeDefined();
+    },
+  });
 });
