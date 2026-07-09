@@ -21,6 +21,24 @@ export const DEFAULT_TOKEN_LIMIT = 1_048_576;
 export const GEMMA_4_TOKEN_LIMIT = 256_000;
 
 export function tokenLimit(model: Model): TokenCount {
+  if (!model) {
+    return DEFAULT_TOKEN_LIMIT;
+  }
+
+  const cleaned = model.toLowerCase();
+
+  // Handle local and remote vLLM configurations
+  if (cleaned.includes('12b') && cleaned.includes('remote')) {
+    return 98_304; // Remote Gemma 4 12B serves 96K Context
+  }
+  if (
+    cleaned.includes('12b') ||
+    cleaned.includes('26b') ||
+    cleaned.includes('gemma4')
+  ) {
+    return 32_768; // Standard Gemma 4 serves 32K context
+  }
+
   // Add other models as they become relevant or if specified by config
   // Pulled from https://ai.google.dev/gemini-api/docs/models
   switch (model) {

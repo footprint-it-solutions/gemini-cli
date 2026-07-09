@@ -22,11 +22,7 @@ import {
   Storage,
 } from '@google/gemini-cli-core';
 import { loadCliConfig, parseArguments, type CliArgs } from './config.js';
-import {
-  type Settings,
-  type MergedSettings,
-  createTestMergedSettings,
-} from './settings.js';
+import { type Settings, createTestMergedSettings } from './settings.js';
 import * as ServerConfig from '@google/gemini-cli-core';
 
 import { isWorkspaceTrusted } from './trustedFolders.js';
@@ -73,7 +69,7 @@ vi.mock('fs', async (importOriginal) => {
       if (mockPaths.has(p.toString())) {
         return { isDirectory: () => true } as unknown as import('fs').Stats;
       }
-      return actualFs.statSync(p as unknown as string);
+      return actualFs.statSync(p);
     }),
     realpathSync: vi.fn((p) => p),
   };
@@ -246,6 +242,23 @@ describe('parseArguments', () => {
 
     const parsedArgs = await parseArguments(createTestMergedSettings());
     expect(parsedArgs.sessionId).toBe('test-uuid-1234');
+  });
+
+  it('should print git commit sha and exit when --build-git-sha is provided', async () => {
+    process.argv = ['node', 'script.js', '--build-git-sha'];
+    const mockWrite = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called');
+    });
+
+    await expect(parseArguments(createTestMergedSettings())).rejects.toThrow(
+      'process.exit called',
+    );
+
+    expect(mockWrite).toHaveBeenCalled();
+    expect(mockExit).toHaveBeenCalledWith(0);
   });
 
   describe('worktree', () => {
@@ -528,12 +541,8 @@ describe('parseArguments', () => {
         expect(parsedArgs.query).toBe(expectedQuery);
         expect(parsedArgs.prompt).toBe(expectedQuery);
         expect(parsedArgs.promptInteractive).toBeUndefined();
-        if (expectedModel) {
-          expect(parsedArgs.model).toBe(expectedModel);
-        }
-        if (debug) {
-          expect(parsedArgs.debug).toBe(true);
-        }
+        expect(parsedArgs.model).toBe(expectedModel);
+        expect(parsedArgs.debug).toBe(debug);
       },
     );
 
@@ -2021,43 +2030,46 @@ describe('loadCliConfig with includeDirectories', () => {
     vi.restoreAllMocks();
   });
 
-  it.skip('should combine and resolve paths from settings and CLI arguments', async () => {
-    const mockCwd = path.resolve(path.sep, 'home', 'user', 'project');
-    process.argv = [
-      'node',
+  it.todo(
+    'should combine and resolve paths from settings and CLI arguments',
+    async () => {
+      const mockCwd = path.resolve(path.sep, 'home', 'user', 'project');
+      process.argv = [
+        'node',
 
-      'script.js',
-      '--include-directories',
-      `${path.resolve(path.sep, 'cli', 'path1')},${path.join(mockCwd, 'cli', 'path2')}`,
-    ];
-    const argv = await parseArguments(createTestMergedSettings());
-    const settings = createTestMergedSettings({
-      context: {
-        includeDirectories: [
-          path.resolve(path.sep, 'settings', 'path1'),
-          path.join(os.homedir(), 'settings', 'path2'),
-          path.join(mockCwd, 'settings', 'path3'),
-        ],
-      },
-    });
-    const config = await loadCliConfig(settings, 'test-session', argv);
-    const expected = [
-      mockCwd,
-      path.resolve(path.sep, 'cli', 'path1'),
-      path.join(mockCwd, 'cli', 'path2'),
-      path.resolve(path.sep, 'settings', 'path1'),
-      path.join(os.homedir(), 'settings', 'path2'),
-      path.join(mockCwd, 'settings', 'path3'),
-    ];
-    const directories = config.getWorkspaceContext().getDirectories();
-    expect(directories).toEqual([mockCwd]);
-    expect(config.getPendingIncludeDirectories()).toEqual(
-      expect.arrayContaining(expected.filter((dir) => dir !== mockCwd)),
-    );
-    expect(config.getPendingIncludeDirectories()).toHaveLength(
-      expected.length - 1,
-    );
-  });
+        'script.js',
+        '--include-directories',
+        `${path.resolve(path.sep, 'cli', 'path1')},${path.join(mockCwd, 'cli', 'path2')}`,
+      ];
+      const argv = await parseArguments(createTestMergedSettings());
+      const settings = createTestMergedSettings({
+        context: {
+          includeDirectories: [
+            path.resolve(path.sep, 'settings', 'path1'),
+            path.join(os.homedir(), 'settings', 'path2'),
+            path.join(mockCwd, 'settings', 'path3'),
+          ],
+        },
+      });
+      const config = await loadCliConfig(settings, 'test-session', argv);
+      const expected = [
+        mockCwd,
+        path.resolve(path.sep, 'cli', 'path1'),
+        path.join(mockCwd, 'cli', 'path2'),
+        path.resolve(path.sep, 'settings', 'path1'),
+        path.join(os.homedir(), 'settings', 'path2'),
+        path.join(mockCwd, 'settings', 'path3'),
+      ];
+      const directories = config.getWorkspaceContext().getDirectories();
+      expect(directories).toEqual([mockCwd]);
+      expect(config.getPendingIncludeDirectories()).toEqual(
+        expect.arrayContaining(expected.filter((dir) => dir !== mockCwd)),
+      );
+      expect(config.getPendingIncludeDirectories()).toHaveLength(
+        expected.length - 1,
+      );
+    },
+  );
 });
 
 describe('loadCliConfig compressionThreshold', () => {
@@ -2823,7 +2835,7 @@ describe('loadCliConfig approval mode', () => {
           directory: '.custom-plans',
         },
       },
-    } as unknown as MergedSettings);
+    });
     const argv = await parseArguments(settings);
     const config = await loadCliConfig(settings, 'test-session', argv);
     const plansDir = config.storage.getPlansDir();

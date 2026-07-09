@@ -87,6 +87,23 @@ powerful tool for developers.
   it can lead to test leakage and is less reliable. To "unset" a variable, use
   an empty string `vi.stubEnv('NAME', '')`.
 
+### Behavioral and evaluation testing (BDD) mandate
+
+- **User journey simulation (Strict):** All BDD and evaluation tests must
+  simulate genuine, end-to-end user journeys using the real, in-process
+  application (such as `OllamaAppRig` or `AppRig`). Tests that rely on isolated
+  mocks or static assertions are forbidden for behavioral checks, as they fail
+  to capture real-world execution, terminal UI renders, and conversational
+  history.
+- **Minimum turn depth:** To prove conversational and scheduler resilience, BDD
+  tests must execute and complete at least five full turns of user-assistant
+  interaction. Single-turn tests do not prove continuation or history sanity.
+- **LLM-based evaluation:** Use an independent, strict Quality Assurance LLM
+  (such as AWS Bedrock Nova Micro) to assess output completeness and veracity.
+  Do not use fragile, rigid static string analysis for BDD tests. The evaluator
+  model must determine whether the TUI output satisfies the prompt's semantic
+  goals.
+
 ## Documentation
 
 - Always use the `docs-writer` skill when you are asked to write, edit, or
@@ -94,3 +111,22 @@ powerful tool for developers.
 - Documentation is located in the `docs/` directory.
 - Suggest documentation updates when code changes render existing documentation
   obsolete or incomplete.
+
+## Low-Conflict Fork Principle (Fork Mandate)
+
+To guarantee that this repository can be rebased smoothly from Google's upstream
+`master` branch with minimal manual conflict resolution:
+
+- **Zero-Conflict Files:** Whenever introducing provider-specific logic, custom
+  test rigs, direct scripts, or evaluation workflows (for Bedrock, Ollama,
+  etc.), **always create brand new files** (such as `OllamaAppRig.tsx` or
+  `ollama.eval.ts`) rather than hacking existing Gemini-specific core or test
+  structures.
+- **Minimal Conflict footprint:** Edits to existing upstream files must be kept
+  to an absolute bare minimum. They must be restricted strictly to high-level
+  entry points, imports, and short conditional hooks (e.g.
+  `if (isOllama) { ... }`) to steer the application toward our custom fork
+  files.
+- **No Shared Test Pollution:** Do not modify existing Gemini-specific test
+  files (such as `AppRig.tsx` or `.eval.ts` files). All live provider
+  verification must use new dedicated files.

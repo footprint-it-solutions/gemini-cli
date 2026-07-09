@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { UiTelemetryService } from './uiTelemetry.js';
 import { ToolCallDecision } from './tool-call-decision.js';
+import { coreEvents, CoreEvent } from '../utils/events.js';
 import {
   ToolCallEvent,
   EVENT_API_ERROR,
@@ -859,6 +860,25 @@ describe('UiTelemetryService', () => {
       const metrics = service.getMetrics();
       expect(metrics.files.totalLinesAdded).toBe(0);
       expect(metrics.files.totalLinesRemoved).toBe(0);
+    });
+  });
+
+  describe('Utility Token Usage Event Processing', () => {
+    it('should aggregate utility tokens when CoreEvent.UtilityTokenUsage is emitted', () => {
+      coreEvents.emit(CoreEvent.UtilityTokenUsage, {
+        model: 'bedrock/nova-micro',
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        context: 'test',
+      });
+
+      const metrics = service.getMetrics();
+      expect(metrics.utilityTokens).toEqual({
+        input: 100,
+        output: 50,
+        total: 150,
+      });
     });
   });
 });

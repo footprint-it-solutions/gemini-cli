@@ -1,59 +1,40 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`AuthDialog > Snapshots > renders correctly with auth error 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│                                                                                                  │
-│ ? Get started                                                                                    │
-│                                                                                                  │
-│   How would you like to authenticate for this project?                                           │
-│                                                                                                  │
-│   (selected) Sign in with Google(not selected) Use Gemini API Key(not selected) Vertex AI        │
-│                                                                                                  │
-│   Something went wrong                                                                           │
-│                                                                                                  │
-│   (Use Enter to select)                                                                          │
-│                                                                                                  │
-│   Terms of Services and Privacy Notice for Gemini CLI                                            │
-│                                                                                                  │
-│   https://geminicli.com/docs/resources/tos-privacy/                                              │
-│                                                                                                  │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-"
-`;
-
 exports[`AuthDialog > Snapshots > renders correctly with default props 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                                                                  │
-│ ? Get started                                                                                    │
+│ Select Authentication Method                                                                     │
 │                                                                                                  │
-│   How would you like to authenticate for this project?                                           │
+│ (selected) Log in with Google (OAuth)                                                            │
+│ (not selected) Gemini API Key                                                                    │
+│ (not selected) Vertex AI (GCP)                                                                   │
+│ (not selected) OpenAI API                                                                        │
+│ (not selected) Amazon Bedrock                                                                    │
+│ (not selected) vLLM (Local/Remote)                                                               │
+│ (not selected) AI API Gateway                                                                    │
 │                                                                                                  │
-│   (selected) Sign in with Google(not selected) Use Gemini API Key(not selected) Vertex AI        │
-│                                                                                                  │
-│   (Use Enter to select)                                                                          │
-│                                                                                                  │
-│   Terms of Services and Privacy Notice for Gemini CLI                                            │
-│                                                                                                  │
-│   https://geminicli.com/docs/resources/tos-privacy/                                              │
+│ Press ESC to cancel                                                                              │
 │                                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 "
 `;
 
-exports[`AuthDialog > Snapshots > renders correctly with enforced auth type 1`] = `
+exports[`AuthDialog > Snapshots > renders correctly with validation error 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                                                                  │
-│ ? Get started                                                                                    │
+│ Select Authentication Method                                                                     │
 │                                                                                                  │
-│   How would you like to authenticate for this project?                                           │
+│ (selected) Log in with Google (OAuth)                                                            │
+│ (not selected) Gemini API Key                                                                    │
+│ (not selected) Vertex AI (GCP)                                                                   │
+│ (not selected) OpenAI API                                                                        │
+│ (not selected) Amazon Bedrock                                                                    │
+│ (not selected) vLLM (Local/Remote)                                                               │
+│ (not selected) AI API Gateway                                                                    │
 │                                                                                                  │
-│   (selected) Use Gemini API Key                                                                  │
+│ Some validation error                                                                            │
 │                                                                                                  │
-│   (Use Enter to select)                                                                          │
-│                                                                                                  │
-│   Terms of Services and Privacy Notice for Gemini CLI                                            │
-│                                                                                                  │
-│   https://geminicli.com/docs/resources/tos-privacy/                                              │
+│ Press ESC to cancel                                                                              │
 │                                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 "

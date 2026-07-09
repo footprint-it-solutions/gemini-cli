@@ -7,7 +7,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { wasmLoader } from 'esbuild-plugin-wasm';
 
 let esbuild;
@@ -63,6 +63,39 @@ const external = [
   '@lydell/node-pty-win32-arm64',
   '@lydell/node-pty-win32-x64',
   '@github/keytar',
+  '@google/gemini-cli-devtools',
+  '@aws-sdk/*',
+  '@smithy/*',
+  '@opentelemetry/api',
+  '@opentelemetry/semantic-conventions',
+  '@opentelemetry/api-logs',
+  'openai',
+  'systeminformation',
+  'isbinaryfile',
+  '@google-cloud/opentelemetry-cloud-trace-exporter',
+  '@google-cloud/opentelemetry-cloud-monitoring-exporter',
+  '@opentelemetry/exporter-trace-otlp-grpc',
+  '@opentelemetry/exporter-logs-otlp-grpc',
+  '@google-cloud/logging',
+  '@opentelemetry/exporter-metrics-otlp-grpc',
+  '@opentelemetry/core',
+  '@opentelemetry/exporter-trace-otlp-http',
+  '@opentelemetry/exporter-logs-otlp-http',
+  'html-to-text',
+  '@opentelemetry/exporter-metrics-otlp-http',
+  '@opentelemetry/otlp-exporter-base',
+  '@opentelemetry/sdk-node',
+  '@opentelemetry/resources',
+  'web-tree-sitter',
+  '@opentelemetry/sdk-trace-node',
+  'chardet',
+  'dotenv-expand',
+  '@opentelemetry/sdk-logs',
+  '@opentelemetry/sdk-metrics',
+  'chokidar',
+  '@opentelemetry/instrumentation-http',
+  'json-stable-stringify',
+  '@google/genai',
 ];
 
 const baseConfig = {
@@ -78,6 +111,11 @@ const commonAliases = {
   punycode: 'punycode/',
 };
 
+const bundleOutdir = path.resolve(__dirname, 'bundle');
+if (existsSync(bundleOutdir)) {
+  rmSync(bundleOutdir, { recursive: true, force: true });
+}
+
 const cliConfig = {
   ...baseConfig,
   banner: {
@@ -86,6 +124,7 @@ const cliConfig = {
   entryPoints: { gemini: 'packages/cli/index.ts' },
   outdir: 'bundle',
   splitting: true,
+  preserveSymlinks: false,
   define: {
     __filename: '__chunk_filename',
     __dirname: '__chunk_dirname',

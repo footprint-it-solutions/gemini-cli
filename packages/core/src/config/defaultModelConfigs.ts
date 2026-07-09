@@ -4,13 +4,59 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ThinkingLevel } from '@google/genai';
+import {
+  type GenerationConfig,
+  type SafetySetting,
+  HarmCategory,
+  HarmBlockThreshold,
+  ThinkingLevel,
+} from '@google/genai';
 import type { ModelConfigServiceConfig } from '../services/modelConfigService.js';
 import { DEFAULT_THINKING_MODE } from './models.js';
 
-// The default model configs. We use `base` as the parent for all of our model
-// configs, while `chat-base`, a child of `base`, is the parent of the models
-// we use in the "chat" experience.
+/**
+ * Common safety settings for models.
+ */
+export const DEFAULT_SAFETY_SETTINGS: SafetySetting[] = [
+  {
+    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+];
+
+/**
+ * Default generation config for general purpose models.
+ */
+export const DEFAULT_GENERATION_CONFIG: GenerationConfig = {
+  temperature: 1.0,
+  topP: 0.95,
+  topK: 64,
+  maxOutputTokens: 8192,
+  responseMimeType: 'text/plain',
+};
+
+/**
+ * Model aliases for Amazon Bedrock Nova models.
+ */
+export const AMAZON_NOVA_PRO = 'eu.amazon.nova-2-pro-v1:0';
+export const AMAZON_NOVA_LITE = 'eu.amazon.nova-2-lite-v1:0';
+export const AMAZON_NOVA_MICRO = 'eu.amazon.nova-micro-v1:0';
+
+/**
+ * Model configuration registry.
+ */
 export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
   aliases: {
     base: {
@@ -257,6 +303,21 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
       extends: 'gemini-3-flash-base',
       modelConfig: {},
     },
+    'bedrock-next-speaker-checker': {
+      extends: 'base',
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_LITE,
+      },
+    },
+    'bedrock-chat-compression': {
+      extends: 'base',
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_LITE,
+        generateContentConfig: {
+          maxOutputTokens: 4000,
+        },
+      },
+    },
     'context-snapshotter': {
       extends: 'gemini-3-flash-base',
       modelConfig: {
@@ -310,17 +371,73 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
         model: 'gemini-3-flash-preview',
       },
     },
-  },
-  overrides: [
-    {
-      match: { model: 'chat-base', isRetry: true },
+
+    // Google Gemini
+    'gemini-1.5-pro': { modelConfig: { model: 'google/gemini-1.5-pro' } },
+    'gemini-1.5-flash': { modelConfig: { model: 'google/gemini-1.5-flash' } },
+    'gemini-2.0-flash-exp': {
+      modelConfig: { model: 'google/gemini-2.0-flash-exp' },
+    },
+
+    // OpenAI
+    'gpt-4o': { modelConfig: { model: 'openai/gpt-4o' } },
+    'gpt-4o-mini': { modelConfig: { model: 'openai/gpt-4o-mini' } },
+    'o1-preview': { modelConfig: { model: 'openai/o1-preview' } },
+    'o1-mini': { modelConfig: { model: 'openai/o1-mini' } },
+
+    // Amazon Bedrock
+    'nova-pro': {
       modelConfig: {
-        generateContentConfig: {
-          temperature: 1,
-        },
+        model: 'bedrock/' + AMAZON_NOVA_PRO,
+        generateContentConfig: { maxOutputTokens: 10000 },
       },
     },
-  ],
+    'nova-lite': {
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_LITE,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
+    },
+    'nova-micro': {
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_MICRO,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
+    },
+    'bedrock/nova-pro': {
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_PRO,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
+    },
+    'bedrock/nova-lite': {
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_LITE,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
+    },
+    'bedrock/nova-micro': {
+      modelConfig: {
+        model: 'bedrock/' + AMAZON_NOVA_MICRO,
+        generateContentConfig: { maxOutputTokens: 10000 },
+      },
+    },
+
+    // vLLM
+    'gemma4-12b': {
+      modelConfig: { model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized' },
+    },
+    'gemma4-26b': {
+      modelConfig: {
+        model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized-remote',
+      },
+    },
+    'gemma4-12b-remote': {
+      modelConfig: {
+        model: 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized-remote',
+      },
+    },
+  },
   modelDefinitions: {
     // Concrete Models
     'gemini-3.1-flash-lite': {
@@ -441,6 +558,29 @@ export const DEFAULT_MODEL_CONFIGS: ModelConfigServiceConfig = {
       isPreview: false,
       isVisible: false,
     },
+    'gemini-1.5-pro': { tier: 'pro', family: 'gemini-1.5' },
+    'gemini-1.5-flash': { tier: 'flash', family: 'gemini-1.5' },
+    'nova-pro': {
+      tier: 'pro',
+      family: 'nova',
+      displayName: 'Nova 2 Pro',
+      isVisible: true,
+    },
+    'nova-lite': {
+      tier: 'flash',
+      family: 'nova',
+      displayName: 'Nova 2 Lite',
+      isVisible: true,
+    },
+    'nova-micro': {
+      tier: 'flash',
+      family: 'nova',
+      displayName: 'Nova 2 Micro',
+      isVisible: true,
+    },
+    'bedrock/nova-pro': { tier: 'pro', family: 'nova', isVisible: false },
+    'bedrock/nova-lite': { tier: 'flash', family: 'nova', isVisible: false },
+    'bedrock/nova-micro': { tier: 'flash', family: 'nova', isVisible: false },
   },
   modelIdResolutions: {
     'gemma-4-31b-it': {

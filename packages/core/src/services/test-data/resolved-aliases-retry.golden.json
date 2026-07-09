@@ -320,6 +320,21 @@
       "topP": 1
     }
   },
+  "bedrock-next-speaker-checker": {
+    "model": "bedrock/eu.amazon.nova-2-lite-v1:0",
+    "generateContentConfig": {
+      "temperature": 0,
+      "topP": 1
+    }
+  },
+  "bedrock-chat-compression": {
+    "model": "bedrock/eu.amazon.nova-2-lite-v1:0",
+    "generateContentConfig": {
+      "temperature": 0,
+      "topP": 1,
+      "maxOutputTokens": 4000
+    }
+  },
   "context-snapshotter": {
     "model": "gemini-3-flash-preview",
     "generateContentConfig": {
@@ -361,6 +376,86 @@
   },
   "agent-history-provider-summarizer": {
     "model": "gemini-3-flash-preview",
+    "generateContentConfig": {}
+  },
+  "gemini-1.5-pro": {
+    "model": "google/gemini-1.5-pro",
+    "generateContentConfig": {}
+  },
+  "gemini-1.5-flash": {
+    "model": "google/gemini-1.5-flash",
+    "generateContentConfig": {}
+  },
+  "gemini-2.0-flash-exp": {
+    "model": "google/gemini-2.0-flash-exp",
+    "generateContentConfig": {}
+  },
+  "gpt-4o": {
+    "model": "openai/gpt-4o",
+    "generateContentConfig": {}
+  },
+  "gpt-4o-mini": {
+    "model": "openai/gpt-4o-mini",
+    "generateContentConfig": {}
+  },
+  "o1-preview": {
+    "model": "openai/o1-preview",
+    "generateContentConfig": {}
+  },
+  "o1-mini": {
+    "model": "openai/o1-mini",
+    "generateContentConfig": {}
+  },
+  "nova-pro": {
+    "model": "bedrock/eu.amazon.nova-2-pro-v1:0",
+    "generateContentConfig": {
+      "maxOutputTokens": 10000
+    }
+  },
+  "nova-lite": {
+    "model": "bedrock/eu.amazon.nova-2-lite-v1:0",
+    "generateContentConfig": {
+      "maxOutputTokens": 10000
+    }
+  },
+  "nova-micro": {
+    "model": "bedrock/eu.amazon.nova-micro-v1:0",
+    "generateContentConfig": {
+      "maxOutputTokens": 10000
+    }
+  },
+  "bedrock/nova-pro": {
+    "model": "bedrock/eu.amazon.nova-2-pro-v1:0",
+    "generateContentConfig": {
+      "maxOutputTokens": 10000
+    }
+  },
+  "bedrock/nova-lite": {
+    "model": "bedrock/eu.amazon.nova-2-lite-v1:0",
+    "generateContentConfig": {
+      "maxOutputTokens": 10000
+    }
+  },
+  "bedrock/nova-micro": {
+    "model": "bedrock/eu.amazon.nova-micro-v1:0",
+    "generateContentConfig": {
+      "maxOutputTokens": 10000
+    }
+  },
+  "llama3": {
+    "model": "ollama/llama3",
+    "generateContentConfig": {}
+  },
+  "mistral": {
+    "model": "ollama/mistral",
+    "generateContentConfig": {}
+  },
+  "phi3": {
+    "model": "ollama/phi3",
+    "generateContentConfig": {}
+  },
+  "llama3.1": {
+    "model": "ollama/llama3.1",
     "generateContentConfig": {}
   }
 }

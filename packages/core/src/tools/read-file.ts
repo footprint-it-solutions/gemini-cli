@@ -238,6 +238,10 @@ export class ReadFileTool extends BaseDeclarativeTool<
   protected override validateToolParamValues(
     params: ReadFileToolParams,
   ): string | null {
+    if (!params || typeof params.file_path !== 'string') {
+      return "The 'file_path' parameter must be a non-empty string.";
+    }
+
     if (params.file_path.trim() === '') {
       return "The 'file_path' parameter must be non-empty.";
     }

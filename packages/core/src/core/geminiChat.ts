@@ -380,6 +380,7 @@ export class GeminiChat {
     role: LlmRole,
     displayContent?: PartListUnion,
     apiHistoryOverride?: Content[],
+    _requestId?: string,
   ): Promise<AsyncGenerator<StreamEvent>> {
     await this.sendPromise;
 
@@ -672,7 +673,6 @@ export class GeminiChat {
 
     return binaryParts.length > 0 ? binaryParts : undefined;
   }
-
   private async makeApiCallAndProcessStream(
     modelConfigKey: ModelConfigKey,
     requestHistory: readonly HistoryTurn[],
@@ -680,6 +680,7 @@ export class GeminiChat {
     abortSignal: AbortSignal,
     role: LlmRole,
     apiHistoryOverride?: Content[],
+    _requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     // Last mile scrubbing to remove internal tracking properties (e.g. callIndex)
     // before sending to the Gemini API. This whitelists only standard Gemini fields.
@@ -836,8 +837,7 @@ export class GeminiChat {
           toolSelectionResult.tools &&
           Array.isArray(toolSelectionResult.tools)
         ) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-          config.tools = toolSelectionResult.tools as Tool[];
+          config.tools = toolSelectionResult.tools;
         }
       }
 
@@ -860,6 +860,7 @@ export class GeminiChat {
         },
         prompt_id,
         role,
+        undefined,
       );
     };
 
@@ -1134,8 +1135,7 @@ export class GeminiChat {
         (candidate) => candidate.finishReason,
       );
       if (candidateWithReason) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-        finishReason = candidateWithReason.finishReason as FinishReason;
+        finishReason = candidateWithReason.finishReason;
       }
 
       if (chunk.functionCalls && chunk.functionCalls.length > 0) {

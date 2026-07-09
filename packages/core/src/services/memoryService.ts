@@ -23,6 +23,7 @@ import { FRONTMATTER_REGEX, parseFrontmatter } from '../skills/skillLoader.js';
 import { LocalAgentExecutor } from '../agents/local-executor.js';
 import { SkillExtractionAgent } from '../agents/skill-extraction-agent.js';
 import { getModelConfigAlias } from '../agents/registry.js';
+import { AuthType } from '../core/contentGenerator.js';
 import {
   isToolActivityError,
   type SubagentActivityEvent,
@@ -1265,13 +1266,35 @@ export async function startMemoryService(config: Config): Promise<void> {
 
     const context = buildAgentLoopContext(config);
 
+    // If not using Gemini, we MUST fallback/inherit to the active configured model
+    // so we don't attempt to route Gemini-specific models to Ollama or Bedrock.
+    let model = agentDefinition.modelConfig.model;
+    const authType =
+      typeof config.getContentGeneratorConfig === 'function'
+        ? config.getContentGeneratorConfig()?.authType
+        : undefined;
+    const isGeminiAuth =
+      authType === AuthType.USE_GEMINI ||
+      authType === AuthType.LOGIN_WITH_GOOGLE ||
+      authType === AuthType.COMPUTE_ADC ||
+      authType === AuthType.LEGACY_CLOUD_SHELL;
+
+    if (model === 'inherit' || !isGeminiAuth) {
+      model = typeof config.getModel === 'function' ? config.getModel() : model;
+    }
+
+    const agentModelConfig = {
+      ...agentDefinition.modelConfig,
+      model,
+    };
+
     // Register the agent's model config since it's not going through AgentRegistry.
     const modelAlias = getModelConfigAlias(agentDefinition);
     config.modelConfigService.registerRuntimeModelConfig(modelAlias, {
-      modelConfig: agentDefinition.modelConfig,
+      modelConfig: agentModelConfig,
     });
     debugLogger.log(
-      `[MemoryService] Starting extraction agent (model: ${agentDefinition.modelConfig.model}, maxTurns: 30, maxTime: 30min)`,
+      `[MemoryService] Starting extraction agent (model: ${agentModelConfig.model}, maxTurns: 30, maxTime: 30min)`,
     );
 
     const candidateSessionsByPath = new Map(

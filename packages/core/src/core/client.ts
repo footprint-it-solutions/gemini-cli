@@ -27,6 +27,7 @@ import {
 import type { Config } from '../config/config.js';
 import { type AgentLoopContext } from '../config/agent-loop-context.js';
 import { getCoreSystemPrompt } from './prompts.js';
+import { getOriginalToolUseId } from './providers/bedrockNovaProvider.js';
 import { checkNextSpeaker } from '../utils/nextSpeakerChecker.js';
 import { reportError } from '../utils/errorReporting.js';
 import { GeminiChat } from './geminiChat.js';
@@ -41,7 +42,7 @@ import type {
   ChatRecordingService,
   ResumedSessionData,
 } from '../services/chatRecordingService.js';
-import type { ContentGenerator } from './contentGenerator.js';
+import { AuthType, type ContentGenerator } from './contentGenerator.js';
 import { LoopDetectionService } from '../services/loopDetectionService.js';
 import { ChatCompressionService } from '../context/chatCompressionService.js';
 import { AgentHistoryProvider } from '../context/agentHistoryProvider.js';
@@ -49,10 +50,7 @@ import type { ContextManager } from '../context/contextManager.js';
 import type { HistoryTurn } from './agentChatHistory.js';
 import { ideContextStore } from '../ide/ideContext.js';
 import { logNextSpeakerCheck } from '../telemetry/loggers.js';
-import type {
-  DefaultHookOutput,
-  AfterAgentHookOutput,
-} from '../hooks/types.js';
+import type { DefaultHookOutput } from '../hooks/types.js';
 import { NextSpeakerCheckEvent, LlmRole } from '../telemetry/types.js';
 import { uiTelemetryService } from '../telemetry/uiTelemetry.js';
 import type { IdeContext, File } from '../ide/types.js';
@@ -75,8 +73,26 @@ import {
   type ApprovalModeChangedPayload,
 } from '../utils/events.js';
 import { initializeContextManager } from '../context/initializer.js';
+import {
+  type BedrockNovaContinuationState,
+  type BedrockNovaTurnState,
+  type BedrockTurnClassifierResult,
+  type BedrockNovaProviderTurnStateMetadata,
+  type BedrockTurnTextKind,
+  checkNextSpeakerBedrockNova,
+  shouldUseBedrockContinuationBudget,
+  shouldContinueBedrockFallbackChain,
+  detectMonologueRepetition,
+} from '../bedrock-nova/bedrockNovaContinuation.js';
 
 const MAX_TURNS = 100;
+
+interface ToolCallSummary {
+  name: string;
+  filePath?: string;
+  startLine?: number;
+  endLine?: number;
+}
 
 type BeforeAgentHookReturn =
   | {
@@ -93,6 +109,7 @@ type BeforeAgentHookReturn =
 export class GeminiClient {
   private chat?: GeminiChat;
   private sessionTurnCount = 0;
+  private readonly fallbackTurnIds = new WeakMap<object, string>();
 
   private readonly loopDetector: LoopDetectionService;
   private readonly compressionService: ChatCompressionService;
@@ -145,6 +162,266 @@ export class GeminiClient {
       this.updateSystemInstruction();
     }
   };
+
+  private getNextSpeakerCheckerConfig(): {
+    authType?: string;
+    modelOverride: string;
+    resolvedModel: string;
+  } {
+    const authType = this.config.getContentGeneratorConfig()?.authType;
+    const modelOverride =
+      authType === AuthType.BEDROCK || authType === AuthType.BEDROCK_NOVA
+        ? 'bedrock-next-speaker-checker'
+        : 'next-speaker-checker';
+    const resolvedModel = this.config.modelConfigService.getResolvedConfig({
+      model: modelOverride,
+    }).model;
+    return { authType, modelOverride, resolvedModel };
+  }
+
+  private isBedrockNovaAuth(): boolean {
+    const authType = this.config.getContentGeneratorConfig()?.authType;
+    return authType === AuthType.BEDROCK || authType === AuthType.BEDROCK_NOVA;
+  }
+
+  private getRecentToolCallSummaries(limit = 3): ToolCallSummary[] {
+    if (!this.isInitialized()) {
+      return [];
+    }
+
+    const history = this.getChat().getHistory();
+    const summaries: ToolCallSummary[] = [];
+
+    for (let i = history.length - 1; i >= 0 && summaries.length < limit; i--) {
+      const content = history[i];
+      const parts = content.parts || [];
+
+      for (let j = parts.length - 1; j >= 0 && summaries.length < limit; j--) {
+        const functionCall = parts[j].functionCall;
+        if (!functionCall?.name) {
+          continue;
+        }
+
+        const rawArgs = functionCall.args;
+        const args: Record<string, unknown> = {};
+        if (rawArgs && typeof rawArgs === 'object') {
+          for (const [key, val] of Object.entries(rawArgs)) {
+            args[key] = val;
+          }
+        }
+
+        const filePathVal = args['file_path'];
+        const startLineVal = args['start_line'];
+        const endLineVal = args['end_line'];
+
+        summaries.push({
+          name: functionCall.name,
+          filePath: typeof filePathVal === 'string' ? filePathVal : undefined,
+          startLine:
+            typeof startLineVal === 'number' ? startLineVal : undefined,
+          endLine: typeof endLineVal === 'number' ? endLineVal : undefined,
+        });
+      }
+    }
+
+    return summaries;
+  }
+
+  private getToolProgressFingerprint(
+    recentToolCalls: ToolCallSummary[],
+  ): string {
+    return (
+      recentToolCalls
+        .slice(0, 3)
+        .map(
+          (call) =>
+            `${call.name}:${call.filePath ?? ''}:${call.startLine ?? ''}:${call.endLine ?? ''}`,
+        )
+        .join('|') || 'no-tools'
+    );
+  }
+
+  private getLatestBedrockNovaProviderTurnStateMetadata(
+    turn: Turn,
+  ): BedrockNovaProviderTurnStateMetadata | undefined {
+    for (const response of [...turn.getDebugResponses()].reverse()) {
+      const metadata = (
+        response as GenerateContentResponse & {
+          metadata?: {
+            bedrockTurnState?: BedrockNovaProviderTurnStateMetadata;
+          };
+        }
+      ).metadata;
+      if (metadata?.bedrockTurnState) {
+        return metadata.bedrockTurnState;
+      }
+    }
+
+    return undefined;
+  }
+
+  private classifyBedrockNovaTurnState(
+    turnState: BedrockNovaTurnState,
+  ): BedrockTurnClassifierResult {
+    if (turnState.endsWithColon) {
+      return {
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['ends_with_colon'],
+        reason:
+          'The response ended with a trailing colon, suggesting a truncated tool call output.',
+        source: 'deterministic',
+      };
+    }
+
+    if (turnState.finishReason === 'MAX_TOKENS') {
+      return {
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['max_tokens_reached'],
+        reason:
+          'The model reached the maximum token limit, so it must be auto-continued to complete its response.',
+        source: 'deterministic',
+      };
+    }
+
+    const loopCheck = detectMonologueRepetition(turnState.responseText);
+    if (loopCheck.isLoop) {
+      return {
+        decision: 'ask_user',
+        confidence: 'high',
+        signals: ['repetition_loop_detected'],
+        reason: `Repetition loop detected: ${loopCheck.reason}. Breaking loop and asking user for instruction.`,
+        source: 'deterministic',
+      };
+    }
+
+    if (turnState.pendingToolCalls > 0) {
+      return {
+        decision: 'stop',
+        confidence: 'high',
+        signals: ['pending_tool_calls'],
+        reason:
+          'A tool call is already pending, so no continuation fallback should run.',
+        source: 'deterministic',
+      };
+    }
+
+    if (turnState.endsWithQuestion) {
+      return {
+        decision: 'ask_user',
+        confidence: 'high',
+        signals: ['user_question'],
+        reason: 'The assistant ended with a user-directed question.',
+        source: 'deterministic',
+      };
+    }
+
+    if (turnState.finishReason === 'MALFORMED_MODEL_OUTPUT') {
+      return {
+        decision: 'continue',
+        confidence: 'high',
+        signals: ['malformed_model_output'],
+        reason:
+          'The model reported malformed output, which should trigger continuation recovery.',
+        source: 'deterministic',
+      };
+    }
+
+    return {
+      decision: 'uncertain',
+      confidence: 'low',
+      signals: [
+        `text_kind:${turnState.textKind}`,
+        ...(turnState.endsWithColon ? ['trailing_colon'] : []),
+        ...(turnState.rawStopReason
+          ? [`raw_stop_reason:${turnState.rawStopReason}`]
+          : []),
+        `finish_reason:${turnState.finishReason || 'unknown'}`,
+      ],
+      reason:
+        'The turn is ambiguous after applying deterministic safety guards and needs Nova Micro classification.',
+      source: 'deterministic',
+    };
+  }
+
+  private buildBedrockNovaTurnState(
+    turn: Turn,
+    promptId: string,
+    turnId: string,
+  ): BedrockNovaTurnState {
+    const providerMetadata =
+      this.getLatestBedrockNovaProviderTurnStateMetadata(turn);
+    const responseText = (
+      turn.getResponseText() ||
+      providerMetadata?.responseText ||
+      ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
+    const recentToolCalls = this.getRecentToolCallSummaries();
+    const currentToolFingerprint =
+      this.getToolProgressFingerprint(recentToolCalls);
+    const endsWithQuestion = /[?؟]$/.test(responseText);
+    const endsWithColon = /:$/.test(responseText);
+
+    let textKind: BedrockTurnTextKind = 'unknown';
+    if (!responseText) {
+      textKind = 'empty';
+    } else if (endsWithQuestion) {
+      textKind = 'question';
+    } else if (endsWithColon) {
+      textKind = 'continuation_preamble';
+    } else {
+      textKind = 'answer';
+    }
+
+    const appearsIncomplete =
+      textKind === 'continuation_preamble' ||
+      turn.finishReason?.toString() === 'MALFORMED_MODEL_OUTPUT';
+
+    const turnState: BedrockNovaTurnState = {
+      promptId,
+      turnId,
+      finishReason: turn.finishReason?.toString() || '',
+      rawStopReason: providerMetadata?.rawStopReason || null,
+      responseText,
+      recentToolCalls,
+      currentToolFingerprint,
+      pendingToolCalls: turn.pendingToolCalls.length,
+      textKind,
+      decision: 'uncertain',
+      appearsIncomplete,
+      endsWithColon,
+      endsWithQuestion,
+      providerMetadata,
+    };
+
+    turnState.decision = this.classifyBedrockNovaTurnState(turnState).decision;
+    return turnState;
+  }
+
+  private getTurnCorrelationId(turn: Turn, promptId: string): string {
+    if (
+      typeof (turn as Turn & { getTurnId?: () => string }).getTurnId ===
+      'function'
+    ) {
+      return (turn as Turn & { getTurnId: () => string }).getTurnId();
+    }
+
+    if (typeof turn === 'object' && turn !== null) {
+      const existingId = this.fallbackTurnIds.get(turn);
+      if (existingId) {
+        return existingId;
+      }
+
+      const fallbackId = `${promptId}-turn-${randomUUID()}`;
+      this.fallbackTurnIds.set(turn, fallbackId);
+      return fallbackId;
+    }
+
+    return `${promptId}-turn-${randomUUID()}`;
+  }
 
   clearCurrentSequenceModel(): void {
     this.currentSequenceModel = null;
@@ -617,6 +894,10 @@ export class GeminiClient {
     prompt_id: string,
     boundedTurns: number,
     displayContent?: PartListUnion,
+    stopHookActive: boolean = false,
+    bedrockNovaContinuationState: BedrockNovaContinuationState = {
+      fallbackContinuationCount: 0,
+    },
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
     // Re-initialize turn (it was empty before if in loop, or new instance)
     let turn = new Turn(this.getChat(), prompt_id);
@@ -690,6 +971,58 @@ export class GeminiClient {
 
       if (compressed.compressionStatus === CompressionStatus.COMPRESSED) {
         yield { type: GeminiEventType.ChatCompressed, value: compressed };
+      }
+    }
+
+    if (
+      this.isBedrockNovaAuth() &&
+      bedrockNovaContinuationState.fallbackContinuationCount > 0
+    ) {
+      const fullHistory = this.getChat().getHistory(/*curated=*/ true);
+      if (fullHistory.length > 3) {
+        const firstMessage = fullHistory[0];
+        const lastTwoMessages = fullHistory.slice(-2);
+
+        const precedingModelContent = lastTwoMessages[1];
+        let precedingBaseId = 'tooluse_synthetic';
+        if (precedingModelContent && precedingModelContent.parts) {
+          for (const p of precedingModelContent.parts) {
+            const originalId = getOriginalToolUseId(p);
+            if (originalId) {
+              precedingBaseId = originalId;
+              break;
+            }
+          }
+        }
+
+        const continuityNudge: Content = {
+          role: 'user',
+          parts: [
+            {
+              text: '[System Continuity Nudge]: You reached the token limit during your previous output. Seamlessly resume generating your previous response from the last line. Do NOT start over, do NOT repeat your intro, and do NOT output any preamble. Wrap your response inside nova_response_schema as normal.',
+            },
+            {
+              functionResponse: {
+                id: precedingBaseId,
+                name: 'nova_response_schema',
+                response: { success: true },
+              },
+            },
+          ],
+        };
+        apiHistoryOverride = [
+          firstMessage,
+          ...lastTwoMessages,
+          continuityNudge,
+        ];
+
+        debugLogger.log(
+          '[GeminiClient] Bedrock Nova context pruned for auto-continuation',
+          JSON.stringify({
+            originalLength: fullHistory.length,
+            prunedLength: apiHistoryOverride.length,
+          }),
+        );
       }
     }
 
@@ -800,10 +1133,12 @@ export class GeminiClient {
     // Update tools with the final modelId to ensure model-dependent descriptions are used.
     await this.setTools(modelToUse);
 
+    const turnId = this.getTurnCorrelationId(turn, prompt_id);
     const resultStream = turn.run(modelConfigKey, request, signal, {
       displayContent,
       role: LlmRole.MAIN,
       apiHistoryOverride,
+      requestId: turnId,
     });
     let isError = false;
 
@@ -872,16 +1207,219 @@ export class GeminiClient {
       }
     }
 
+    if (turn.finishReason?.toString() === 'MALFORMED_MODEL_OUTPUT') {
+      const forensicResponseText = turn.getResponseText() || '';
+      const toolCallsStr =
+        turn.pendingToolCalls.length > 0
+          ? JSON.stringify(turn.pendingToolCalls)
+          : 'none';
+      debugLogger.error(
+        `[Bedrock] Turn ended with malformed_model_output. promptId=${prompt_id} turnId=${turnId} Captured text: ${forensicResponseText}. Captured tool calls: ${toolCallsStr}`,
+      );
+    }
+
     if (!turn.pendingToolCalls.length && signal && !signal.aborted) {
-      if (
+      if (this.isBedrockNovaAuth()) {
+        if (!this.config.getQuotaErrorOccurred()) {
+          const responseText = turn.getResponseText() || '';
+
+          if (responseText.trim() === '') {
+            const emptyCount =
+              bedrockNovaContinuationState?.emptyResponseCount || 0;
+            if (emptyCount < 1) {
+              debugLogger.warn(
+                '[GeminiClient] Empty response and no tool calls detected for Bedrock Nova. Triggering safety circuit-breaker reprompt.',
+                JSON.stringify({
+                  promptId: prompt_id,
+                  turnId,
+                  emptyCount,
+                }),
+              );
+
+              const repromptRequest = [
+                {
+                  text: 'Your previous response was empty. Please provide your progress update, task status, or next steps now. Wrap your response inside nova_response_schema as normal.',
+                },
+              ];
+
+              turn = yield* this.sendMessageStream(
+                repromptRequest,
+                signal,
+                prompt_id,
+                boundedTurns - 1,
+                displayContent,
+                stopHookActive,
+                {
+                  fallbackContinuationCount:
+                    bedrockNovaContinuationState?.fallbackContinuationCount ||
+                    0,
+                  lastFallbackToolFingerprint:
+                    bedrockNovaContinuationState?.lastFallbackToolFingerprint,
+                  lastResponseTextLength:
+                    bedrockNovaContinuationState?.lastResponseTextLength,
+                  emptyResponseCount: emptyCount + 1,
+                },
+              );
+              return turn;
+            }
+          }
+
+          const bedrockTurnState = this.buildBedrockNovaTurnState(
+            turn,
+            prompt_id,
+            turnId,
+          );
+          const deterministicClassifier =
+            this.classifyBedrockNovaTurnState(bedrockTurnState);
+          const microClassifier =
+            deterministicClassifier?.decision === 'uncertain'
+              ? await checkNextSpeakerBedrockNova(
+                  bedrockTurnState,
+                  signal,
+                  prompt_id,
+                  this.config.getAwsProfile?.(),
+                  this.config.getContentGeneratorConfig()?.authType ===
+                    AuthType.BEDROCK_NOVA
+                    ? 'bedrock-nova-debug.log'
+                    : 'bedrock-debug.log',
+                )
+              : null;
+          const continuationClassifier =
+            microClassifier || deterministicClassifier;
+          const shouldFallbackContinue =
+            continuationClassifier?.decision === 'continue' || false;
+          const continuationAction =
+            continuationClassifier?.decision === 'continue'
+              ? 'continue'
+              : continuationClassifier?.decision === 'ask_user'
+                ? 'wait_for_user'
+                : 'stop';
+
+          debugLogger.debug(
+            '[GeminiClient] bedrock continuation evaluation',
+            JSON.stringify({
+              promptId: prompt_id,
+              turnId,
+              finishReason: turn.finishReason?.toString() || '',
+              rawStopReason: bedrockTurnState.rawStopReason,
+              responseText: responseText.slice(0, 160),
+              textKind: bedrockTurnState.textKind,
+              recentToolCalls: bedrockTurnState.recentToolCalls,
+              fallbackContinuationCount:
+                bedrockNovaContinuationState.fallbackContinuationCount,
+              currentToolFingerprint: bedrockTurnState.currentToolFingerprint,
+              fallbackBudgetRemaining: shouldUseBedrockContinuationBudget(
+                bedrockNovaContinuationState,
+              ),
+              fallbackProgressAllowed: shouldContinueBedrockFallbackChain(
+                bedrockNovaContinuationState,
+                bedrockTurnState.currentToolFingerprint,
+                bedrockTurnState.endsWithColon ||
+                  bedrockTurnState.finishReason === 'MALFORMED_MODEL_OUTPUT' ||
+                  bedrockTurnState.finishReason === 'MAX_TOKENS',
+                responseText.length,
+              ),
+              deterministicClassifier,
+              microClassifier,
+              continuationAction,
+              shouldFallbackContinue,
+            }),
+          );
+
+          if (
+            microClassifier &&
+            continuationAction !== 'continue' &&
+            (bedrockTurnState.textKind === 'continuation_preamble' ||
+              bedrockTurnState.endsWithColon)
+          ) {
+            debugLogger.warn(
+              '[GeminiClient] Bedrock micro classifier declined continuation for a continuation-like turn',
+              JSON.stringify({
+                promptId: prompt_id,
+                turnId,
+                responseText: responseText.slice(0, 160),
+                textKind: bedrockTurnState.textKind,
+                rawStopReason: bedrockTurnState.rawStopReason,
+                microClassifier,
+                continuationAction,
+              }),
+            );
+          }
+
+          if (
+            shouldUseBedrockContinuationBudget(bedrockNovaContinuationState) &&
+            shouldContinueBedrockFallbackChain(
+              bedrockNovaContinuationState,
+              bedrockTurnState.currentToolFingerprint,
+              bedrockTurnState.endsWithColon ||
+                bedrockTurnState.finishReason === 'MALFORMED_MODEL_OUTPUT' ||
+                bedrockTurnState.finishReason === 'MAX_TOKENS',
+              responseText.length,
+            ) &&
+            shouldFallbackContinue
+          ) {
+            debugLogger.log(
+              '[GeminiClient] Bedrock fallback continuation triggered',
+              JSON.stringify({
+                promptId: prompt_id,
+                turnId,
+                finishReason: turn.finishReason?.toString() || '',
+                responseText: responseText.slice(0, 160),
+                rawStopReason: bedrockTurnState.rawStopReason,
+                textKind: bedrockTurnState.textKind,
+                recentToolCalls: bedrockTurnState.recentToolCalls,
+                classifier: continuationClassifier,
+                fallbackContinuationCount:
+                  bedrockNovaContinuationState.fallbackContinuationCount,
+                currentToolFingerprint: bedrockTurnState.currentToolFingerprint,
+                nextFallbackContinuationCount:
+                  bedrockNovaContinuationState.fallbackContinuationCount + 1,
+              }),
+            );
+            const nextRequest = [{ text: 'Continue' }];
+            turn = yield* this.sendMessageStream(
+              nextRequest,
+              signal,
+              prompt_id,
+              boundedTurns - 1,
+              displayContent,
+              stopHookActive,
+              {
+                fallbackContinuationCount:
+                  bedrockNovaContinuationState.fallbackContinuationCount + 1,
+                lastFallbackToolFingerprint:
+                  bedrockTurnState.currentToolFingerprint,
+                lastResponseTextLength: responseText.length,
+              },
+            );
+            return turn;
+          }
+        }
+      } else if (
         !this.config.getQuotaErrorOccurred() &&
         !this.config.getSkipNextSpeakerCheck()
       ) {
+        const checkerConfig = this.getNextSpeakerCheckerConfig();
         const nextSpeakerCheck = await checkNextSpeaker(
           this.getChat(),
           this.config.getBaseLlmClient(),
           signal,
           prompt_id,
+          {
+            ...checkerConfig,
+            turnId,
+          },
+        );
+        debugLogger.debug(
+          '[GeminiClient] next speaker decision',
+          JSON.stringify({
+            promptId: prompt_id,
+            turnId,
+            finishReason: turn.finishReason?.toString() || '',
+            nextSpeaker: nextSpeakerCheck?.next_speaker || null,
+            fallbackContinuationCount:
+              bedrockNovaContinuationState.fallbackContinuationCount,
+          }),
         );
         logNextSpeakerCheck(
           this.config,
@@ -892,13 +1430,15 @@ export class GeminiClient {
           ),
         );
         if (nextSpeakerCheck?.next_speaker === 'model') {
-          const nextRequest = [{ text: 'Please continue.' }];
+          const nextRequest = [{ text: 'Continue' }];
           turn = yield* this.sendMessageStream(
             nextRequest,
             signal,
             prompt_id,
             boundedTurns - 1,
             displayContent,
+            stopHookActive,
+            bedrockNovaContinuationState,
           );
           return turn;
         }
@@ -914,6 +1454,9 @@ export class GeminiClient {
     turns: number = MAX_TURNS,
     displayContent?: PartListUnion,
     stopHookActive: boolean = false,
+    bedrockNovaContinuationState: BedrockNovaContinuationState = {
+      fallbackContinuationCount: 0,
+    },
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
     this.config.resetTurn();
 
@@ -968,6 +1511,8 @@ export class GeminiClient {
         prompt_id,
         boundedTurns,
         displayContent,
+        stopHookActive,
+        bedrockNovaContinuationState,
       );
 
       // Fire AfterAgent hook if we have a turn and no pending tools
@@ -980,7 +1525,7 @@ export class GeminiClient {
         );
 
         // Cast to AfterAgentHookOutput for access to shouldClearContext()
-        const afterAgentOutput = hookOutput as AfterAgentHookOutput | undefined;
+        const afterAgentOutput = hookOutput;
 
         if (afterAgentOutput?.shouldStopExecution()) {
           const contextCleared = afterAgentOutput.shouldClearContext();

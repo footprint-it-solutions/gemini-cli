@@ -288,7 +288,7 @@ export class LoggingContentGenerator implements ContentGenerator {
       error.response !== null &&
       'data' in error.response
     ) {
-      const response = error.response as { data: unknown };
+      const response = error.response;
       const data = response.data;
 
       if (data instanceof Uint8Array) {
@@ -448,6 +448,7 @@ export class LoggingContentGenerator implements ContentGenerator {
     req: GenerateContentParameters,
     userPromptId: string,
     role: LlmRole,
+    requestId?: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     return runInDevTraceSpan(
       {
@@ -494,6 +495,7 @@ export class LoggingContentGenerator implements ContentGenerator {
             req,
             userPromptId,
             role,
+            requestId,
           );
         } catch (error) {
           const durationMs = Date.now() - startTime;

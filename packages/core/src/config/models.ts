@@ -99,6 +99,16 @@ export const VALID_GEMINI_MODELS = new Set([
 
   GEMMA_4_31B_IT_MODEL,
   GEMMA_4_26B_A4B_IT_MODEL,
+
+  'nova-pro',
+  'nova-lite',
+  'nova-micro',
+  'bedrock/nova-pro',
+  'bedrock/nova-lite',
+  'bedrock/nova-micro',
+  'bedrock/eu.amazon.nova-2-pro-v1:0',
+  'bedrock/eu.amazon.nova-2-lite-v1:0',
+  'bedrock/eu.amazon.nova-micro-v1:0',
 ]);
 
 /** @deprecated Use GEMINI_MODEL_ALIAS_AUTO instead. */
@@ -182,6 +192,24 @@ export function resolveModel(
     return resolved;
   }
 
+  const envModel = process.env['GEMINI_MODEL'];
+  const isVllmActive =
+    (envModel &&
+      (envModel.startsWith('vllm/') ||
+        envModel === 'gemma4-12b' ||
+        envModel === 'gemma4-26b' ||
+        envModel === 'gemma4-12b-remote')) ||
+    process.env['VLLM_BASE_URL'];
+
+  if (isVllmActive) {
+    if (normalizedModel === 'flash' || normalizedModel === 'auto') {
+      return 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized';
+    }
+    if (normalizedModel === 'pro') {
+      return 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized';
+    }
+  }
+
   let resolved: string;
   switch (normalizedModel) {
     case GEMINI_MODEL_ALIAS_AUTO:
@@ -215,6 +243,33 @@ export function resolveModel(
     }
     case GEMINI_MODEL_ALIAS_FLASH_LITE: {
       resolved = DEFAULT_GEMINI_FLASH_LITE_MODEL;
+      break;
+    }
+    case 'nova-pro':
+    case 'bedrock/nova-pro': {
+      resolved = 'bedrock/eu.amazon.nova-2-pro-v1:0';
+      break;
+    }
+    case 'nova-lite':
+    case 'bedrock/nova-lite': {
+      resolved = 'bedrock/eu.amazon.nova-2-lite-v1:0';
+      break;
+    }
+    case 'nova-micro':
+    case 'bedrock/nova-micro': {
+      resolved = 'bedrock/eu.amazon.nova-micro-v1:0';
+      break;
+    }
+    case 'gemma4-12b': {
+      resolved = 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized';
+      break;
+    }
+    case 'gemma4-12b-remote': {
+      resolved = 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized-remote';
+      break;
+    }
+    case 'gemma4-26b': {
+      resolved = 'vllm/google/gemma-4-12B-it-qat-q4_0-unquantized-remote';
       break;
     }
     default: {

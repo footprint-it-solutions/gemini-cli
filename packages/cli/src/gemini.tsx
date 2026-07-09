@@ -21,6 +21,7 @@ import {
   coreEvents,
   CoreEvent,
   getOauthClient,
+  getAuthTypeFromEnv,
   patchStdio,
   writeToStdout,
   writeToStderr,
@@ -61,6 +62,7 @@ import {
   type TrustedFoldersError,
 } from './config/trustedFolders.js';
 import { getStartupWarnings } from './utils/startupWarnings.js';
+import { consumeStartupBuildManifestResult } from './utils/startupBuildVerification.js';
 import { getUserStartupWarnings } from './utils/userStartupWarnings.js';
 import { ConsolePatcher } from './ui/utils/ConsolePatcher.js';
 import { runNonInteractive } from './nonInteractiveCli.js';
@@ -145,9 +147,10 @@ export function getNodeMemoryArgs(isDebugMode: boolean): string[] {
   // out-of-memory crashes during high native-handle concurrency.
   // Note: Only supported in specific Node.js versions compiled with V8 Sandbox enabled.
   const eptFlag = `--max-external-pointer-table-size=${DEFAULT_EPT_SIZE}`;
-  const isV8SandboxEnabled =
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-type-assertion
-    (process.config?.variables as any)?.v8_enable_sandbox === 1;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+  const variables = process.config?.variables as unknown as
+    Record<string, unknown> | undefined;
+  const isV8SandboxEnabled = variables?.['v8_enable_sandbox'] === 1;
 
   if (
     isV8SandboxEnabled &&
@@ -185,7 +188,7 @@ export function setupUnhandledRejectionHandler() {
 This is an unexpected error. Please file a bug report using the /bug tool.
 CRITICAL: Unhandled Promise Rejection!
 =========================================
-Reason: ${reason}${
+Reason: ${reason instanceof Error ? reason.message : String(reason)}${
       reason instanceof Error && reason.stack
         ? `
 Stack trace:
@@ -239,12 +242,13 @@ export async function resolveSessionId(
       );
 
       // Add a single info message to the history to confirm the import
-      sessionData.messages.unshift({
+      const importMessage: MessageRecord = {
         id: `import-${now}`,
         type: 'info',
         content: `Imported session from ${sessionFileArg}`,
         timestamp: isoNow,
-      } as MessageRecord);
+      };
+      sessionData.messages.unshift(importMessage);
 
       const newSessionId = createSessionId();
       sessionData.sessionId = newSessionId;
@@ -377,6 +381,19 @@ export async function main() {
   const settings = loadSettings();
   loadSettingsHandle?.end();
 
+  const startupBuildVerification = consumeStartupBuildManifestResult();
+  if (
+    startupBuildVerification &&
+    startupBuildVerification.status !== 'skipped'
+  ) {
+    const logMethod =
+      startupBuildVerification.status === 'failed' ? 'warn' : 'debug';
+    debugLogger[logMethod](
+      '[StartupBuildVerification]',
+      JSON.stringify(startupBuildVerification),
+    );
+  }
+
   // If a worktree is requested and enabled, set it up early.
   // This must be awaited before any other async tasks that depend on CWD (like loadCliConfig)
   // because setupWorktree calls process.chdir().
@@ -479,19 +496,22 @@ export async function main() {
     validateDnsResolutionOrder(settings.merged.advanced.dnsResolutionOrder),
   );
 
-  // Set a default auth type if one isn't set or is set to a legacy type
+  // Determine the effective auth type based on environment, flags, and settings
+  const envAuthType = getAuthTypeFromEnv(argv.model);
+  const selectedAuthType = settings.merged.security.auth.selectedType;
+
+  // Set a default auth type if one isn't set or is set to a legacy type,
+  // or if the environment/flag implies a different provider.
   if (
-    !settings.merged.security.auth.selectedType ||
-    settings.merged.security.auth.selectedType === AuthType.LEGACY_CLOUD_SHELL
+    !selectedAuthType ||
+    selectedAuthType === AuthType.LEGACY_CLOUD_SHELL ||
+    (envAuthType && envAuthType !== selectedAuthType)
   ) {
-    if (
-      process.env['CLOUD_SHELL'] === 'true' ||
-      process.env['GEMINI_CLI_USE_COMPUTE_ADC'] === 'true'
-    ) {
+    if (envAuthType) {
       settings.setValue(
         SettingScope.User,
         'security.auth.selectedType',
-        AuthType.COMPUTE_ADC,
+        envAuthType,
       );
     }
   }
@@ -640,9 +660,8 @@ export async function main() {
     adminControlsListner.setConfig(config);
 
     if (config.isInteractive() && settings.merged.general.devtools) {
-      const { setupInitialActivityLogger } = await import(
-        './utils/devtoolsService.js'
-      );
+      const { setupInitialActivityLogger } =
+        await import('./utils/devtoolsService.js');
       setupInitialActivityLogger(config);
     }
 

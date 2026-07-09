@@ -5,7 +5,8 @@
  */
 
 import fs from 'node:fs';
-import ignore from 'ignore';
+import ignore_pkg from 'ignore';
+const ignore = (ignore_pkg as any).default || ignore_pkg;
 import picomatch from 'picomatch';
 import type { FileDiscoveryService } from '../../services/fileDiscoveryService.js';
 

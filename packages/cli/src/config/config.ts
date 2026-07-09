@@ -68,6 +68,7 @@ import {
 } from './policy.js';
 import { ExtensionManager } from './extension-manager.js';
 import { McpServerEnablementManager } from './mcp/mcpServerEnablement.js';
+import { GIT_COMMIT_INFO } from '../generated/git-commit.js';
 import type { ExtensionEvents } from '@google/gemini-cli-core/src/utils/extensionLoader.js';
 import { requestConsentNonInteractive } from './extensions/consent.js';
 import { promptForSetting } from './extensions/extensionSettings.js';
@@ -99,6 +100,7 @@ export interface CliArgs {
   listSessions: boolean | undefined;
   deleteSession: string | undefined;
   includeDirectories: string[] | undefined;
+  awsProfile?: string | undefined;
   screenReader: boolean | undefined;
   useWriteTodos: boolean | undefined;
   outputFormat: string | undefined;
@@ -110,6 +112,7 @@ export interface CliArgs {
   acceptRawOutputRisk: boolean | undefined;
   skipTrust: boolean | undefined;
   isCommand: boolean | undefined;
+  buildGitSha?: boolean | undefined;
 }
 
 /**
@@ -459,6 +462,11 @@ export async function parseArguments(
             'Additional directories to include in the workspace (comma-separated or multiple --include-directories)',
           coerce: coerceCommaSeparated,
         })
+        .option('aws-profile', {
+          type: 'string',
+          nargs: 1,
+          description: 'AWS profile to use for Bedrock authentication.',
+        })
         .option('screen-reader', {
           type: 'boolean',
           description: 'Enable screen reader mode for accessibility.',
@@ -494,6 +502,11 @@ export async function parseArguments(
         .option('accept-raw-output-risk', {
           type: 'boolean',
           description: 'Suppress the security warning when using --raw-output.',
+        })
+        .option('build-git-sha', {
+          type: 'boolean',
+          description:
+            'Print the git commit sha used when building gemini-custom and exit.',
         }),
     )
     .version(await getVersion()) // This will enable the --version flag based on package.json
@@ -521,6 +534,13 @@ export async function parseArguments(
     yargsInstance.showHelp();
     await runExitCleanup();
     process.exit(1);
+  }
+
+  // Handle build-git-sha flag manually
+  if (result['build-git-sha'] || result['buildGitSha']) {
+    process.stdout.write(GIT_COMMIT_INFO + '\n');
+    await runExitCleanup();
+    process.exit(0);
   }
 
   // Handle help and version flags manually since we disabled exitProcess
@@ -765,8 +785,7 @@ export async function loadCliConfig(
   let telemetrySettings;
   try {
     telemetrySettings = await resolveTelemetrySettings({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-      env: process.env as unknown as Record<string, string | undefined>,
+      env: process.env,
       settings: settings.telemetry,
     });
   } catch (err) {
@@ -955,7 +974,7 @@ export async function loadCliConfig(
     enabled: !!profileSelector,
   };
 
-  return new Config({
+  const config = new Config({
     acpMode: isAcpMode,
     clientName,
     sessionId,
@@ -1033,6 +1052,10 @@ export async function loadCliConfig(
     fileDiscoveryService: fileService,
     bugCommand: settings.advanced?.bugCommand,
     model: resolvedModel,
+    awsProfile:
+      argv.awsProfile ||
+      process.env['AWS_PROFILE'] ||
+      settings.security?.auth?.awsProfile,
     maxSessionTurns: settings.model?.maxSessionTurns,
 
     listExtensions: argv.listExtensions || false,
@@ -1074,8 +1097,8 @@ export async function loadCliConfig(
     useRenderProcess: settings.ui?.renderProcess,
     useRipgrep: settings.tools?.useRipgrep,
     enableInteractiveShell: settings.tools?.shell?.enableInteractiveShell,
-    shellBackgroundCompletionBehavior: settings.tools?.shell
-      ?.backgroundCompletionBehavior as string | undefined,
+    shellBackgroundCompletionBehavior:
+      settings.tools?.shell?.backgroundCompletionBehavior,
     shellToolInactivityTimeout: settings.tools?.shell?.inactivityTimeout,
     enableShellOutputEfficiency:
       settings.tools?.shell?.enableShellOutputEfficiency ?? true,
@@ -1122,6 +1145,23 @@ export async function loadCliConfig(
     },
     enableConseca: settings.security?.enableConseca,
   });
+
+  if (debugMode) {
+    debugLogger.log(
+      `[Config] Resolved awsProfile: ${config.getAwsProfile() || 'undefined'} (Source: argv=${argv.awsProfile}, env=${process.env['AWS_PROFILE']}, settings=${settings.security?.auth?.awsProfile})`,
+    );
+    const awsEnv = Object.keys(process.env)
+      .filter((key) => key.startsWith('AWS_') || key.startsWith('BEDROCK_'))
+      .reduce<Record<string, string | undefined>>((obj, key) => {
+        obj[key] = process.env[key];
+        return obj;
+      }, {});
+    debugLogger.log(
+      `[Config] AWS/Bedrock Env: ${JSON.stringify(awsEnv, null, 2)}`,
+    );
+  }
+
+  return config;
 }
 
 function mergeExcludeTools(

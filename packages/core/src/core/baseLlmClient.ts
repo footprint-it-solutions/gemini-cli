@@ -28,7 +28,7 @@ import {
   NetworkRetryAttemptEvent,
 } from '../telemetry/types.js';
 import { retryWithBackoff, getRetryErrorType } from '../utils/retry.js';
-import { coreEvents } from '../utils/events.js';
+import { coreEvents, CoreEvent } from '../utils/events.js';
 import { getDisplayString } from '../config/models.js';
 import type { ModelConfigKey } from '../services/modelConfigService.js';
 import {
@@ -353,7 +353,7 @@ export class BaseLlmClient {
         );
       };
 
-      return await retryWithBackoff(apiCall, {
+      const response = await retryWithBackoff(apiCall, {
         shouldRetryOnContent,
         maxAttempts:
           availabilityMaxAttempts ?? maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
@@ -393,6 +393,23 @@ export class BaseLlmClient {
           );
         },
       });
+
+      if (response && response.usageMetadata) {
+        const inputTokens = response.usageMetadata.promptTokenCount || 0;
+        const outputTokens = response.usageMetadata.candidatesTokenCount || 0;
+        const totalTokens =
+          response.usageMetadata.totalTokenCount || inputTokens + outputTokens;
+
+        coreEvents.emit(CoreEvent.UtilityTokenUsage, {
+          model: currentModel,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          context: errorContext,
+        });
+      }
+
+      return response;
     } catch (error) {
       if (abortSignal?.aborted) {
         throw error;

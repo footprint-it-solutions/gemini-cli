@@ -33,6 +33,7 @@ import {
   PREVIEW_GEMINI_FLASH_LITE_MODEL,
 } from '../config/models.js';
 import { PreCompressTrigger } from '../hooks/types.js';
+import { AuthType } from '../core/contentGenerator.js';
 
 /**
  * Default threshold for compression token count as a fraction of the model's
@@ -100,6 +101,20 @@ export function findCompressSplitPoint(
 }
 
 export function modelStringToModelConfigAlias(model: string): string {
+  return resolveCompressionModelConfigAlias(model);
+}
+
+export function resolveCompressionModelConfigAlias(
+  model: string,
+  authType?: string,
+): string {
+  if (authType === AuthType.BEDROCK) {
+    return 'bedrock-chat-compression';
+  }
+  if (authType === AuthType.VLLM || authType === AuthType.OPENAI) {
+    return model;
+  }
+
   switch (model) {
     case PREVIEW_GEMINI_MODEL:
     case PREVIEW_GEMINI_3_1_MODEL:
@@ -350,18 +365,42 @@ export class ChatCompressionService {
         ? originalHistoryToCompress
         : historyToCompressTruncated;
 
-    const hasPreviousSnapshot = historyForSummarizer.some((c) =>
+    // Ensure the summarizer input leaves at least 8,192 tokens for output generation.
+    // This self-healing block prevents vLLM 400 errors when the active history is completely full.
+    const maxSummarizerInputLimit = Math.max(32768, tokenLimit(model) - 8192);
+    const summarizerHistory = [...historyForSummarizer];
+    let summarizerTokenCount = estimateTokenCountSync(
+      summarizerHistory.flatMap((c) => c.parts || []),
+    );
+
+    while (
+      summarizerHistory.length > 1 &&
+      summarizerTokenCount > maxSummarizerInputLimit
+    ) {
+      summarizerHistory.shift(); // FIFO remove oldest turns
+      summarizerTokenCount = estimateTokenCountSync(
+        summarizerHistory.flatMap((c) => c.parts || []),
+      );
+    }
+
+    const hasPreviousSnapshot = summarizerHistory.some((c) =>
       c.parts?.some((p) => p.text?.includes('<state_snapshot>')),
     );
+    const compressionModelConfigKey = {
+      model: resolveCompressionModelConfigAlias(
+        model,
+        config.getContentGeneratorConfig()?.authType,
+      ),
+    };
 
     const anchorInstruction = hasPreviousSnapshot
       ? 'A previous <state_snapshot> exists in the history. You MUST integrate all still-relevant information from that snapshot into the new one, updating it with the more recent events. Do not lose established constraints or critical knowledge.'
       : 'Generate a new <state_snapshot> based on the provided history.';
 
     const summaryResponse = await config.getBaseLlmClient().generateContent({
-      modelConfigKey: { model: modelStringToModelConfigAlias(model) },
+      modelConfigKey: compressionModelConfigKey,
       contents: [
-        ...historyForSummarizer,
+        ...summarizerHistory,
         {
           role: 'user',
           parts: [
@@ -384,7 +423,7 @@ export class ChatCompressionService {
     const verificationResponse = await config
       .getBaseLlmClient()
       .generateContent({
-        modelConfigKey: { model: modelStringToModelConfigAlias(model) },
+        modelConfigKey: compressionModelConfigKey,
         contents: [
           ...historyForSummarizer,
           {

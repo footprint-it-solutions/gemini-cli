@@ -9,6 +9,7 @@ import {
   ChatCompressionService,
   findCompressSplitPoint,
   modelStringToModelConfigAlias,
+  resolveCompressionModelConfigAlias,
 } from './chatCompressionService.js';
 import type { Content, GenerateContentResponse, Part } from '@google/genai';
 import { CompressionStatus } from '../core/turn.js';
@@ -24,6 +25,7 @@ import { tokenLimit } from '../core/tokenLimits.js';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { AuthType } from '../core/contentGenerator.js';
 
 vi.mock('../telemetry/loggers.js');
 vi.mock('../utils/environmentContext.js');
@@ -132,6 +134,17 @@ describe('modelStringToModelConfigAlias', () => {
   });
 });
 
+describe('resolveCompressionModelConfigAlias', () => {
+  it('should return the Bedrock-safe compression alias for Bedrock auth', () => {
+    expect(
+      resolveCompressionModelConfigAlias(
+        'bedrock/eu.amazon.nova-2-lite-v1:0',
+        AuthType.BEDROCK,
+      ),
+    ).toBe('bedrock-chat-compression');
+  });
+});
+
 describe('ChatCompressionService', () => {
   let service: ChatCompressionService;
   let mockChat: GeminiChat;
@@ -160,7 +173,7 @@ describe('ChatCompressionService', () => {
             },
           },
         ],
-      } as unknown as GenerateContentResponse)
+      })
       .mockResolvedValueOnce({
         candidates: [
           {
@@ -169,7 +182,7 @@ describe('ChatCompressionService', () => {
             },
           },
         ],
-      } as unknown as GenerateContentResponse);
+      });
 
     mockConfig = {
       get config() {
@@ -178,6 +191,9 @@ describe('ChatCompressionService', () => {
       getCompressionThreshold: vi.fn(),
       getBaseLlmClient: vi.fn().mockReturnValue({
         generateContent: mockGenerateContent,
+      }),
+      getContentGeneratorConfig: vi.fn().mockReturnValue({
+        authType: AuthType.USE_GEMINI,
       }),
       isInteractive: vi.fn().mockReturnValue(false),
       getActiveModel: vi.fn().mockReturnValue(mockModel),
@@ -306,10 +322,10 @@ describe('ChatCompressionService', () => {
         .fn()
         .mockResolvedValueOnce({
           candidates: [{ content: { parts: [{ text: 'Initial Summary' }] } }],
-        } as unknown as GenerateContentResponse)
+        })
         .mockResolvedValueOnce({
           candidates: [{ content: { parts: [{ text: '   ' }] } }],
-        } as unknown as GenerateContentResponse),
+        }),
     };
     vi.mocked(mockConfig.getBaseLlmClient).mockReturnValue(
       mockLlmClient as unknown as BaseLlmClient,
@@ -388,6 +404,32 @@ describe('ChatCompressionService', () => {
     ).text;
     expect(firstCallText).toContain('### APPROVED PLAN PRESERVATION');
     expect(firstCallText).toContain(planPath);
+  });
+
+  it('should use the Bedrock-safe compression model alias under Bedrock auth', async () => {
+    const history: Content[] = [
+      { role: 'user', parts: [{ text: 'msg1' }] },
+      { role: 'model', parts: [{ text: 'msg2' }] },
+    ];
+    vi.mocked(mockChat.getHistory).mockReturnValue(history);
+    vi.mocked(mockChat.getLastPromptTokenCount).mockReturnValue(600000);
+    vi.mocked(tokenLimit).mockReturnValue(1000);
+    vi.mocked(mockConfig.getContentGeneratorConfig).mockReturnValue({
+      authType: AuthType.BEDROCK,
+    });
+
+    await service.compress(
+      mockChat,
+      mockPromptId,
+      false,
+      'bedrock/eu.amazon.nova-2-lite-v1:0',
+      mockConfig,
+      false,
+    );
+
+    const firstCall = vi.mocked(mockConfig.getBaseLlmClient().generateContent)
+      .mock.calls[0][0];
+    expect(firstCall.modelConfigKey?.model).toBe('bedrock-chat-compression');
   });
 
   it('should not include the approved plan section if no approved plan path exists', async () => {
@@ -497,7 +539,7 @@ describe('ChatCompressionService', () => {
             },
           },
         ],
-      } as unknown as GenerateContentResponse),
+      }),
     };
     vi.mocked(mockConfig.getBaseLlmClient).mockReturnValue(
       mockLlmClient as unknown as BaseLlmClient,

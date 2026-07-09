@@ -1941,20 +1941,20 @@ describe('Server Config (config.ts)', () => {
           throw error;
         }
         if (originalImplementation) {
-          return originalImplementation(input);
+          return originalImplementation(input) as any;
         }
-        return normalizedInput;
+        return normalizedInput as any;
       });
 
       expect(() => config.setSessionId('session-two')).not.toThrow();
     } finally {
       realpathMock.mockImplementation((input) => {
         if (originalImplementation) {
-          return originalImplementation(input);
+          return originalImplementation(input) as any;
         }
-        return typeof input === 'string' || Buffer.isBuffer(input)
+        return (typeof input === 'string' || Buffer.isBuffer(input)
           ? input
-          : input.toString();
+          : input.toString()) as any;
       });
     }
   });
@@ -2546,7 +2546,7 @@ describe('Generation Config Merging (HACK)', () => {
     ).config;
 
     // Assert that the default aliases are present
-    expect(serviceConfig.aliases).toEqual(DEFAULT_MODEL_CONFIGS.aliases);
+    expect(serviceConfig.aliases).toEqual(DEFAULT_MODEL_CONFIGS['aliases']);
     // Assert that the user's overrides are present
     expect(serviceConfig.overrides).toEqual(userOverrides);
   });
@@ -2575,7 +2575,7 @@ describe('Generation Config Merging (HACK)', () => {
     // Assert that the user's aliases are present
     expect(serviceConfig.aliases).toEqual(userAliases);
     // Assert that the default overrides are present
-    expect(serviceConfig.overrides).toEqual(DEFAULT_MODEL_CONFIGS.overrides);
+    expect(serviceConfig.overrides).toEqual(DEFAULT_MODEL_CONFIGS['overrides']);
   });
 
   it('should use user-provided aliases if they exist', () => {

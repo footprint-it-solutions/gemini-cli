@@ -91,9 +91,8 @@ vi.mock('../ui/contexts/StreamingContext.js', async (importOriginal) => {
 vi.mock('@google/gemini-cli-core', async (importOriginal) => {
   const original =
     await importOriginal<typeof import('@google/gemini-cli-core')>();
-  const { MockShellExecutionService: MockService } = await import(
-    './MockShellExecutionService.js'
-  );
+  const { MockShellExecutionService: MockService } =
+    await import('./MockShellExecutionService.js');
   // Register the real execution logic so MockShellExecutionService can fall back to it
   MockService.setOriginalImplementation(original.ShellExecutionService.execute);
 
@@ -161,7 +160,7 @@ export interface PendingConfirmation {
 export class AppRig {
   private renderResult: RenderInstance | undefined;
   private config: Config | undefined;
-  private settings: LoadedSettings | undefined;
+  protected settings: LoadedSettings | undefined;
   private testDir: string;
   private sessionId: string;
 
@@ -400,6 +399,7 @@ export class AppRig {
         tc.status === CoreToolCallStatus.Error ||
         tc.status === CoreToolCallStatus.Cancelled
       ) {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
         return !(tc as TrackedCompletedToolCall | TrackedCancelledToolCall)
           .responseSubmittedToGemini;
       }

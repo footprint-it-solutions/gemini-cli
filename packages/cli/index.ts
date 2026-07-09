@@ -14,6 +14,9 @@ import {
   getSpawnConfig,
   getScriptArgs,
 } from './src/utils/processUtils.js';
+import { runStartupBuildManifestVerification } from './src/utils/startupBuildVerification.js';
+
+export { GeminiSession } from './src/GeminiSession.js';
 
 // --- Global Entry Point ---
 
@@ -81,7 +84,12 @@ async function getMemoryNodeArgs(): Promise<string[]> {
   return [];
 }
 
-async function run() {
+export async function run() {
+  const startupBuildVerification = runStartupBuildManifestVerification();
+  if (startupBuildVerification.shouldExit) {
+    process.exit(1);
+  }
+
   if (!process.env['GEMINI_CLI_NO_RELAUNCH'] && !process.env['SANDBOX']) {
     // --- Lightweight Parent Process / Daemon ---
     // We avoid importing heavy dependencies here to save ~1.5s of startup time.
@@ -89,6 +97,14 @@ async function run() {
     const scriptArgs = getScriptArgs();
     const memoryArgs = await getMemoryNodeArgs();
     const { spawnArgs, env: newEnv } = getSpawnConfig(memoryArgs, scriptArgs);
+
+    const startupBuildManifestResult =
+      process.env['GEMINI_CLI_STARTUP_BUILD_MANIFEST_RESULT'];
+    if (startupBuildManifestResult) {
+      newEnv['GEMINI_CLI_STARTUP_BUILD_MANIFEST_RESULT'] =
+        startupBuildManifestResult;
+    }
+    newEnv['GEMINI_CLI_STARTUP_BUILD_MANIFEST_VERIFIED'] = 'true';
 
     let latestAdminSettings: unknown = undefined;
 
@@ -148,9 +164,8 @@ async function run() {
     // --- Heavy Child Process ---
     // Now we can safely import everything.
     const { main } = await import('./src/gemini.js');
-    const { FatalError, writeToStderr } = await import(
-      '@google/gemini-cli-core'
-    );
+    const { FatalError, writeToStderr } =
+      await import('@google/gemini-cli-core');
     const { runExitCleanup } = await import('./src/utils/cleanup.js');
 
     main().catch(async (error: unknown) => {
@@ -190,4 +205,14 @@ async function run() {
   }
 }
 
-run();
+// Only run if this is the main module
+import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
+const isMain =
+  process.argv[1] &&
+  realpathSync(fileURLToPath(import.meta.url)) ===
+    realpathSync(process.argv[1]);
+
+if (isMain || process.env['GEMINI_CLI_RUN_AS_MAIN'] === 'true') {
+  run();
+}

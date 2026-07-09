@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { randomUUID } from 'node:crypto';
+
 import {
   createUserContent,
   type Content,
@@ -28,6 +30,7 @@ import {
 } from '../utils/errors.js';
 import { InvalidStreamError, type GeminiChat } from './geminiChat.js';
 import { parseThought, type ThoughtSummary } from '../utils/thoughtUtils.js';
+import { XmlToolParser } from '../utils/xmlToolParser.js';
 import type { ModelConfigKey } from '../services/modelConfigService.js';
 import { getCitations } from '../utils/generateContentResponseUtilities.js';
 import { LlmRole } from '../telemetry/types.js';
@@ -240,6 +243,7 @@ export type ServerGeminiStreamEvent =
 // A turn manages the agentic loop turn within the server context.
 export class Turn {
   private callCounter = 0;
+  private readonly turnId = randomUUID();
 
   readonly pendingToolCalls: ToolCallRequestInfo[] = [];
   private debugResponses: GenerateContentResponse[] = [];
@@ -248,10 +252,17 @@ export class Turn {
   finishReason: FinishReason | undefined = undefined;
   private hasLoggedRagTrace = false;
 
+  private xmlToolParser = new XmlToolParser();
+  private emittedSyntheticCallHashes = new Set<string>();
+
   constructor(
     private readonly chat: GeminiChat,
     private readonly prompt_id: string,
   ) {}
+
+  getTurnId(): string {
+    return this.turnId;
+  }
 
   // The run method yields simpler events suitable for server logic
   async *run(
@@ -262,9 +273,15 @@ export class Turn {
       displayContent?: PartListUnion;
       role?: LlmRole;
       apiHistoryOverride?: Content[];
+      requestId?: string;
     } = {},
   ): AsyncGenerator<ServerGeminiStreamEvent> {
-    const { displayContent, role = LlmRole.MAIN, apiHistoryOverride } = options;
+    const {
+      displayContent,
+      role = LlmRole.MAIN,
+      apiHistoryOverride,
+      requestId = this.turnId,
+    } = options;
     try {
       // Note: This assumes `sendMessageStream` yields events like
       // { type: StreamEventType.RETRY } or { type: StreamEventType.CHUNK, value: GenerateContentResponse }
@@ -276,6 +293,7 @@ export class Turn {
         role,
         displayContent,
         apiHistoryOverride,
+        requestId,
       );
 
       for await (const streamEvent of responseStream) {
@@ -362,6 +380,20 @@ export class Turn {
         const text = getResponseText(resp);
         if (text) {
           yield { type: GeminiEventType.Content, value: text, traceId };
+
+          // Parse XML tags from text chunks
+          const syntheticCalls = this.xmlToolParser.parse(text);
+          for (const fnCall of syntheticCalls) {
+            // Generate a hash to avoid double-emitting the same tool call from the stream buffer
+            const hash = `${fnCall.name}:${JSON.stringify(fnCall.args)}`;
+            if (!this.emittedSyntheticCallHashes.has(hash)) {
+              this.emittedSyntheticCallHashes.add(hash);
+              const event = this.handlePendingFunctionCall(fnCall, traceId);
+              if (event) {
+                yield event;
+              }
+            }
+          }
         }
 
         // Handle function calls (requesting tool execution)
@@ -431,7 +463,7 @@ export class Turn {
         typeof error === 'object' &&
         error !== null &&
         'status' in error &&
-        typeof (error as { status: unknown }).status === 'number'
+        typeof error.status === 'number'
           ? // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
             (error as { status: number }).status
           : undefined;

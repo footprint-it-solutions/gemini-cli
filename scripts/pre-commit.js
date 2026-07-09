@@ -5,18 +5,18 @@
  */
 
 import { execSync } from 'node:child_process';
-import lintStaged from 'lint-staged';
 
 try {
   // Get repository root
   const root = execSync('git rev-parse --show-toplevel').toString().trim();
 
-  // Run lint-staged with API directly
-  const passed = await lintStaged({ cwd: root });
+  // Run lint-staged via CLI
+  execSync('npx lint-staged', { cwd: root, stdio: 'inherit' });
 
-  // Exit with appropriate code
-  process.exit(passed ? 0 : 1);
-} catch {
-  // Exit with error code
+  // If we get here, linting passed
+  process.exit(0);
+} catch (error) {
+  // If linting fails, the execSync will throw an error
+  console.error('Pre-commit hook failed:', error.message);
   process.exit(1);
 }
